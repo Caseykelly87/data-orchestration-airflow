@@ -1,0 +1,359 @@
+# =============================================================================
+# data-orchestration-airflow — Docker Compose Stack
+# =============================================================================
+#
+# Architecture Overview
+# ---------------------
+# This stack runs five services across two logical layers:
+#
+#   Infrastructure Layer:
+#     postgres-airflow  — PostgreSQL for Airflow metadata (DAG state, XCom, logs)
+#     postgres-etl      — PostgreSQL for ETL business data (fact + dimension tables)
+#
+#   Airflow Layer:
+#     airflow-init      — One-time DB migration + admin user creation (exits on complete)
+#     airflow-webserver — Airflow UI (http://localhost:8080) + REST API
+#     airflow-scheduler — DAG parsing, task scheduling, retry management
+#
+# Executor: LocalExecutor
+#   Tasks run as subprocesses on the scheduler node. This is appropriate for
+#   a single-machine setup. Upgrade to CeleryExecutor for horizontal scaling.
+#
+# Database Isolation
+# ------------------
+# Airflow metadata and ETL data intentionally use separate Postgres instances.
+# This enforces the separation of concerns between the orchestration layer
+# and the application data layer, and allows each to be scaled or migrated
+# independently. In production, replace both with AWS RDS or Cloud SQL.
+#
+# Volume Strategy
+# ---------------
+# - dags/, logs/, plugins/, tests/ are bind-mounted (host ↔ container) so
+#   DAG edits on the host are instantly reflected inside the container.
+# - Postgres data directories are Docker-managed named volumes, surviving
+#   container restarts but isolated from the host file system.
+#
+# Network
+# -------
+# All services communicate on the internal `airflow-network` bridge network.
+# Only the webserver (8080) and ETL Postgres (configurable, default 5433)
+# are exposed to the host for external access.
+#
+# Environment Variables
+# ---------------------
+# All credentials are injected from the .env file (see .env.example).
+# No secrets appear in this file. The .env file is git-ignored.
+#
+# Usage
+# -----
+#   cp .env.example .env && nano .env   # fill in credentials
+#   docker compose up -d                # start the full stack
+#   docker compose logs -f              # tail logs
+#   docker compose down                 # stop containers (data persists in volumes)
+#   docker compose down -v              # stop + delete all volume data (full reset)
+# =============================================================================
+
+# =============================================================================
+# Shared Airflow Configuration Anchor
+# =============================================================================
+# The &airflow-common anchor is merged into every Airflow service via <<: *airflow-common.
+# Changes made here apply to webserver, scheduler, and init simultaneously.
+# =============================================================================
+x-airflow-common:
+  &airflow-common
+  # Official Airflow image with Python 3.12.
+  # Pin to a specific version for reproducibility. Update deliberately after
+  # reviewing the Airflow changelog for breaking changes.
+  image: apache/airflow:2.10.2-python3.12
+  environment:
+    &airflow-common-env
+
+    # -- Executor -------------------------------------------------------------
+    # LocalExecutor: runs tasks in subprocesses on the scheduler container.
+    # No separate worker containers needed. Appropriate for single-node.
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+
+    # -- Metadata Database ----------------------------------------------------
+    # Airflow stores all operational state here: DAG definitions, task
+    # instances, XCom values, connections, variables, and log metadata.
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+      postgresql+psycopg2://${POSTGRES_AIRFLOW_USER}:${POSTGRES_AIRFLOW_PASSWORD}@postgres-airflow:5432/${POSTGRES_AIRFLOW_DB}
+
+    # -- Security -------------------------------------------------------------
+    # Fernet key: encrypts connection passwords and variable values stored in
+    # the metadata DB. Rotating this key requires re-encrypting stored secrets.
+    # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+
+    # Webserver secret key: signs Flask session cookies.
+    # Generate: python -c "import secrets; print(secrets.token_hex(32))"
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
+
+    # -- Operational Defaults -------------------------------------------------
+    # Disable built-in tutorial DAGs — keep the UI clean for portfolio use.
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+
+    # New DAGs start paused. Operators must manually unpause them via the UI
+    # or CLI. Prevents accidental immediate execution on first deploy.
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+
+    # Expose the scheduler's internal health check endpoint.
+    # Used by the Docker Compose healthcheck for the scheduler service.
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+
+    # -- ETL Layer Environment Variables --------------------------------------
+    # These values are injected into every task's execution environment,
+    # making them available to the ETL Python functions via os.environ.
+    # They are NOT used by Airflow itself — only by the task callables.
+
+    # SQLAlchemy connection string for the ETL data database.
+    # The hostname `postgres-etl` resolves via Docker's internal DNS.
+    ETL_DATABASE_URL: >-
+      postgresql+psycopg2://${POSTGRES_ETL_USER}:${POSTGRES_ETL_PASSWORD}@postgres-etl:5432/${POSTGRES_ETL_DB}
+
+    # API keys for FRED and BLS data sources. Required in Phase 2 (ETL integration).
+    FRED_API_KEY: ${FRED_API_KEY}
+    BLS_API_KEY: ${BLS_API_KEY}
+
+  volumes:
+    # Bind mounts: changes on the host are immediately visible inside containers.
+    # This enables live DAG development — edit a DAG file, the scheduler picks
+    # it up on the next scan cycle (default: 30 seconds).
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./tests:/opt/airflow/tests
+
+    # Phase 2: Mount the ETL project for import by task callables.
+    # Uncomment when beginning ETL integration:
+    # - ../economic-data-etl:/opt/airflow/etl
+
+  depends_on:
+    &airflow-common-depends-on
+    postgres-airflow:
+      condition: service_healthy
+
+  networks:
+    - airflow-network
+
+
+# =============================================================================
+# Services
+# =============================================================================
+services:
+
+  # ---------------------------------------------------------------------------
+  # postgres-airflow — Airflow Metadata Database
+  # ---------------------------------------------------------------------------
+  # Stores all Airflow-internal state: DAG runs, task instances, XCom, logs,
+  # connections, and variables. This is NOT for application data.
+  #
+  # NEVER use this database for ETL output. It is fully managed by Airflow
+  # and its schema changes with each Airflow version upgrade.
+  # ---------------------------------------------------------------------------
+  postgres-airflow:
+    image: postgres:16
+    container_name: postgres_airflow
+    environment:
+      POSTGRES_USER: ${POSTGRES_AIRFLOW_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_AIRFLOW_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_AIRFLOW_DB}
+    volumes:
+      - postgres-airflow-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - "CMD"
+        - "pg_isready"
+        - "-U"
+        - "${POSTGRES_AIRFLOW_USER}"
+        - "-d"
+        - "${POSTGRES_AIRFLOW_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: always
+    networks:
+      - airflow-network
+
+  # ---------------------------------------------------------------------------
+  # postgres-etl — ETL Data Database
+  # ---------------------------------------------------------------------------
+  # Stores the fact and dimension tables produced by the economic-data-etl
+  # pipeline. Intentionally separate from the Airflow metadata DB to enforce
+  # the application/orchestration boundary and allow independent scaling.
+  #
+  # Exposed on the host at ${POSTGRES_ETL_PORT} (default: 5433) to allow
+  # local connection via pgAdmin, DBeaver, or psql for development inspection.
+  #
+  # In production: replace with AWS RDS or Cloud SQL. Update ETL_DATABASE_URL
+  # in the environment block above to point to the managed instance.
+  # ---------------------------------------------------------------------------
+  postgres-etl:
+    image: postgres:16
+    container_name: postgres_etl
+    environment:
+      POSTGRES_USER: ${POSTGRES_ETL_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_ETL_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_ETL_DB}
+    volumes:
+      - postgres-etl-data:/var/lib/postgresql/data
+    ports:
+      # External port:internal port. Use 5433 to avoid conflict with any
+      # local Postgres instance running on the standard 5432 port.
+      - "${POSTGRES_ETL_PORT:-5433}:5432"
+    healthcheck:
+      test:
+        - "CMD"
+        - "pg_isready"
+        - "-U"
+        - "${POSTGRES_ETL_USER}"
+        - "-d"
+        - "${POSTGRES_ETL_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: always
+    networks:
+      - airflow-network
+
+  # ---------------------------------------------------------------------------
+  # airflow-init — One-Time Initialization Service
+  # ---------------------------------------------------------------------------
+  # This service runs ONCE on first startup to:
+  #   1. Run `airflow db migrate` — applies Airflow schema to postgres-airflow
+  #   2. Create the initial admin user with credentials from .env
+  #
+  # The service exits with code 0 on success. The webserver and scheduler
+  # declare `condition: service_completed_successfully` to wait for it.
+  #
+  # Idempotency: `airflow db migrate` is safe to re-run (it applies only
+  # pending migrations). The user create step is a no-op if the user exists.
+  #
+  # restart: "no" — this service must not restart after completion. If it
+  # exits with a non-zero code (e.g., wrong DB credentials), inspect logs:
+  #   docker compose logs airflow-init
+  # ---------------------------------------------------------------------------
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow_init
+    # `version` gives the entrypoint a valid subcommand to run after completing
+    # the DB migration and user creation triggered by the env vars below.
+    # Without this, the entrypoint exits with code 2 (no subcommand provided),
+    # which blocks the webserver and scheduler from starting even though init
+    # succeeded. `airflow version` is a no-op that exits cleanly with code 0.
+    command: version
+    environment:
+      <<: *airflow-common-env
+      # These special variables are read by the official Airflow entrypoint
+      # script to trigger DB migration and admin user creation automatically.
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+      _AIRFLOW_WWW_USER_EMAIL: ${AIRFLOW_ADMIN_EMAIL:-admin@example.com}
+    restart: "no"
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+      postgres-etl:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # airflow-webserver — Airflow UI and REST API
+  # ---------------------------------------------------------------------------
+  # Exposes the Airflow web interface at http://localhost:${AIRFLOW_WEBSERVER_PORT}.
+  # Also serves the Airflow REST API at /api/v1/ for programmatic access.
+  #
+  # The healthcheck polls /health (the Airflow built-in health endpoint).
+  # The webserver is considered healthy when it returns HTTP 200.
+  #
+  # Note: The webserver does not schedule or execute tasks. It only provides
+  # the UI, reads from the metadata DB, and serves the REST API.
+  # ---------------------------------------------------------------------------
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow_webserver
+    command: webserver
+    ports:
+      - "${AIRFLOW_WEBSERVER_PORT:-8080}:8080"
+    healthcheck:
+      test:
+        - "CMD"
+        - "curl"
+        - "--fail"
+        - "http://localhost:8080/health"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ---------------------------------------------------------------------------
+  # airflow-scheduler — DAG Parsing and Task Scheduling
+  # ---------------------------------------------------------------------------
+  # The scheduler is the brain of Airflow:
+  #   - Continuously scans dags/ for new and modified DAG files
+  #   - Evaluates schedule intervals and queues tasks for execution
+  #   - With LocalExecutor, also executes tasks as subprocesses
+  #   - Manages retries, SLAs, and task state transitions
+  #
+  # The scheduler's health check polls its internal HTTP server on port 8974
+  # (the Airflow scheduler health check port, separate from the webserver).
+  # ---------------------------------------------------------------------------
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow_scheduler
+    command: scheduler
+    healthcheck:
+      test:
+        - "CMD"
+        - "curl"
+        - "--fail"
+        - "http://localhost:8974/health"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+
+# =============================================================================
+# Volumes
+# =============================================================================
+# Docker-managed named volumes for database persistence. Data in these volumes
+# survives `docker compose down` but is deleted by `docker compose down -v`.
+#
+# In production: replace with an external managed database (AWS RDS, GCP Cloud
+# SQL) and remove these volume declarations entirely.
+# =============================================================================
+volumes:
+  postgres-airflow-data:
+    driver: local
+  postgres-etl-data:
+    driver: local
+
+
+# =============================================================================
+# Networks
+# =============================================================================
+# All services communicate on the isolated airflow-network bridge network.
+# Docker's embedded DNS resolves container names (e.g., `postgres-airflow`,
+# `postgres-etl`) as hostnames within this network.
+#
+# Only explicitly port-mapped services are reachable from the host:
+#   - airflow-webserver: port 8080 (or AIRFLOW_WEBSERVER_PORT)
+#   - postgres-etl:      port 5433 (or POSTGRES_ETL_PORT)
+# =============================================================================
+networks:
+  airflow-network:
+    driver: bridge

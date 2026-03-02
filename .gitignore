@@ -1,0 +1,72 @@
+# =============================================================================
+# data-orchestration-airflow — .gitignore
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Secrets and Environment Variables — NEVER commit
+# -----------------------------------------------------------------------------
+.env
+
+# -----------------------------------------------------------------------------
+# Airflow Runtime Directories
+# -----------------------------------------------------------------------------
+# Log files are large, machine-specific, and regenerated on every run.
+# The logs/ directory itself is tracked (for Docker bind mount) but its
+# contents are excluded. The .gitkeep file preserves the empty directory.
+logs/
+logs/*
+!logs/.gitkeep
+
+# Airflow plugins compiled artifacts
+plugins/__pycache__/
+
+# -----------------------------------------------------------------------------
+# Docker Volumes
+# -----------------------------------------------------------------------------
+# If volumes are ever bind-mounted to local directories instead of named
+# Docker volumes, exclude them here.
+volumes/
+
+# -----------------------------------------------------------------------------
+# Python
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env.local
+.env.*.local
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+*.egg
+
+# -----------------------------------------------------------------------------
+# Testing and Coverage
+# -----------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# -----------------------------------------------------------------------------
+# IDE and Editor Files
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

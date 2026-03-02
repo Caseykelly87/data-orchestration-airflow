@@ -1,0 +1,461 @@
+"""
+Economic Data Pipeline DAG
+===========================
+
+Project:   data-orchestration-airflow (Project 2)
+Module:    dags/economic_pipeline_dag.py
+Author:    data-platform
+Schedule:  Daily at midnight UTC
+
+Architecture Philosophy
+-----------------------
+This module is the ORCHESTRATION LAYER ONLY. It contains zero business
+logic. All data-fetching, normalization, and persistence logic lives
+exclusively in Project 1: economic-data-etl (src/extract.py,
+src/transform.py, src/load.py).
+
+This DAG's responsibilities:
+  1. Define the daily execution schedule
+  2. Define retry and failure behavior for transient API errors
+  3. Wire tasks into the correct dependency order
+  4. Pass execution context between phases via Airflow's XCom
+  5. Log progress at every phase boundary for observability
+
+This DAG does NOT:
+  - Fetch data from APIs  → that is src/extract.py
+  - Parse or normalize data → that is src/transform.py
+  - Write to the database  → that is src/load.py
+
+Separation of Concerns
+-----------------------
+The strict boundary between orchestration and logic serves several
+production purposes:
+
+  - **Testability**: ETL logic can be tested independently of Airflow
+    (see economic-data-etl/tests/). DAG structure can be tested
+    without ETL dependencies (see tests/test_dag_structure.py).
+
+  - **Replaceability**: The orchestration layer can be swapped for
+    a different scheduler (Prefect, Dagster, cron) without touching
+    any ETL code.
+
+  - **Debuggability**: When a run fails, the traceback points to the
+    ETL function, not Airflow boilerplate. Logs are clean and meaningful.
+
+  - **Future compatibility**: dbt integration and cloud deployment can
+    be added by modifying this file, not the ETL layer.
+
+Current Milestone: Initial Commit (Infrastructure Validation)
+--------------------------------------------------------------
+Task callables in this file are SCAFFOLD STUBS. They log intent and
+confirm that the Airflow scheduler can discover, parse, and execute
+this DAG correctly. No ETL functions are called yet.
+
+ETL integration is the NEXT milestone. Integration points are marked
+with `# ETL_INTEGRATION:` comments that specify exactly which functions
+to import and call.
+
+ETL Integration Plan (Phase 2)
+--------------------------------
+Mounting strategy: The economic-data-etl project is mounted into the
+Airflow container at /opt/airflow/etl/ via docker-compose.yml. Tasks
+will import from that path:
+
+    import sys
+    sys.path.insert(0, "/opt/airflow/etl")
+    from src.extract import fetch_fred_data, fetch_bls_data
+    ...
+
+Database: The ETL data Postgres container is accessible within the
+Docker network at host `postgres-etl:5432`. The connection string is
+injected via the ETL_DATABASE_URL environment variable.
+"""
+
+import logging
+import os
+from datetime import datetime, timedelta
+
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+
+
+# ---------------------------------------------------------------------------
+# Module Logger
+# Airflow captures records from the root logger and from named loggers.
+# Using __name__ scopes these records to this module in the Airflow UI task
+# log viewer, making it easy to distinguish DAG-level logs from ETL logs.
+# ---------------------------------------------------------------------------
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Default Arguments
+# ---------------------------------------------------------------------------
+# These arguments are applied to every task in the DAG unless a task
+# explicitly overrides them. This is Airflow's mechanism for applying
+# a consistent operational policy (retries, alerting) across all tasks
+# without repeating configuration at every operator instantiation.
+#
+# Retry policy rationale:
+#   - FRED API has documented rate limits and occasional 503 errors
+#   - BLS API batch endpoint can return 429 on high-traffic days
+#   - 3 retries with a 5-minute delay is appropriate for a daily pipeline:
+#     total worst-case added time = 15 minutes, well within a daily window
+# ---------------------------------------------------------------------------
+default_args = {
+    # Pipeline ownership — used for routing alerts in Airflow Connections
+    # and as a label in the Airflow UI's DAG list.
+    "owner": "data-platform",
+
+    # Do not require the previous run's task to succeed before running.
+    # This pipeline is idempotent: each run fetches its own window of data.
+    "depends_on_past": False,
+
+    # Retry policy: 3 attempts with 5-minute spacing between each.
+    "retries": 3,
+    "retry_delay": timedelta(minutes=5),
+
+    # Alert configuration. Set to True and configure SMTP/Slack in
+    # Airflow Admin → Connections for production alerting.
+    "email_on_failure": False,
+    "email_on_retry": False,
+
+    # Anchors the DAG schedule. Setting this in the past with catchup=False
+    # means the DAG begins running from today's scheduled time, not from
+    # this date. See the DAG-level `catchup=False` setting below.
+    "start_date": datetime(2025, 1, 1),
+}
+
+
+# ---------------------------------------------------------------------------
+# Task Callables
+# ---------------------------------------------------------------------------
+# These functions are the boundary between Airflow and the ETL layer.
+# In the Initial Commit milestone, they are scaffolded stubs.
+# In Phase 2 (ETL Integration), they import and call ETL functions.
+#
+# Each callable receives Airflow's task context dict via **context.
+# Airflow injects: ds (execution date string), ds_nodash, run_id,
+# task_instance, dag_run, conf, and more.
+# ---------------------------------------------------------------------------
+
+def run_extract(**context: dict) -> dict:
+    """
+    Orchestration wrapper for the ETL extract phase.
+
+    Phase 2 (ETL Integration) responsibilities:
+      - Import fetch_fred_data and fetch_bls_data from the ETL layer
+      - Iterate over FRED_SERIES and fetch each series individually
+      - Fetch all BLS_SERIES in a single batch request
+      - Return a status dict pushed to XCom for downstream tasks
+
+    The ETL extract functions are idempotent: SHA-256 hashing of API
+    responses prevents redundant file writes on unchanged data. This
+    means re-running a failed extract task is always safe.
+
+    Args:
+        **context: Airflow task execution context. Key fields:
+            - context["ds"]:           execution date as "YYYY-MM-DD"
+            - context["run_id"]:       unique identifier for this DAG run
+            - context["task_instance"]: TaskInstance object for XCom push
+
+    Returns:
+        dict: Status payload pushed automatically to XCom by PythonOperator.
+              Downstream tasks can retrieve it via:
+              context["task_instance"].xcom_pull(task_ids="extract_economic_data")
+
+    ETL_INTEGRATION: Replace stub body with:
+        import sys
+        sys.path.insert(0, "/opt/airflow/etl")
+        from src.extract import fetch_fred_data, fetch_bls_data
+        from src.config import FRED_SERIES, BLS_SERIES
+
+        execution_date = context["ds"]
+        logger.info("Extracting FRED data for %s", execution_date)
+        fred_data = {}
+        for name, series_id in FRED_SERIES.items():
+            fred_data[name] = fetch_fred_data(series_id)
+
+        logger.info("Extracting BLS data for %s", execution_date)
+        current_year = int(execution_date[:4])
+        bls_data = fetch_bls_data(BLS_SERIES, 2021, current_year)
+
+        return {"fred_series_count": len(fred_data), "bls_batch_complete": True}
+    """
+    execution_date = context.get("ds", "unknown")
+    run_id = context.get("run_id", "unknown")
+
+    logger.info("=" * 60)
+    logger.info("EXTRACT PHASE — INITIATED")
+    logger.info("Execution date : %s", execution_date)
+    logger.info("Run ID         : %s", run_id)
+    logger.info("Targets        : FRED API (9 series) + BLS API (5 series)")
+    logger.info("Status         : Scaffold stub — ETL integration pending")
+    logger.info("=" * 60)
+
+    return {
+        "phase": "extract",
+        "status": "scaffold_complete",
+        "execution_date": execution_date,
+        "fred_series_count": 9,
+        "bls_series_count": 5,
+    }
+
+
+def run_transform(**context: dict) -> dict:
+    """
+    Orchestration wrapper for the ETL transform phase.
+
+    Phase 2 (ETL Integration) responsibilities:
+      - Pull extract result from XCom to confirm upstream success
+      - Import parse_fred_observations, parse_bls_batch, build_dim_series,
+        and combine_fact_tables from the ETL transform module
+      - Normalize raw API dicts into typed pandas DataFrames
+      - Produce a long-format fact table and a dimension table
+      - Return a status dict for the load task
+
+    The transform step is pure in the functional sense: given the raw
+    data written by extract, it produces the normalized DataFrames.
+    It does not write to the database.
+
+    Args:
+        **context: Airflow task execution context.
+
+    Returns:
+        dict: Status payload pushed to XCom for the load task.
+
+    ETL_INTEGRATION: Replace stub body with:
+        import sys
+        sys.path.insert(0, "/opt/airflow/etl")
+        from src.transform import (
+            parse_fred_observations,
+            parse_bls_batch,
+            build_dim_series,
+            combine_fact_tables,
+        )
+        from src.config import FRED_SERIES, BLS_SERIES
+
+        # XCom pull not required here — transform reads from the file
+        # system paths set by the extract phase (data/raw/).
+
+        fred_frames = [
+            parse_fred_observations(fred_data[name], series_id, name)
+            for name, series_id in FRED_SERIES.items()
+            if fred_data.get(name) is not None
+        ]
+        bls_frame  = parse_bls_batch(bls_data, BLS_SERIES)
+        fact_df    = combine_fact_tables(fred_frames, bls_frame)
+        dim_df     = build_dim_series(FRED_SERIES, BLS_SERIES)
+
+        return {"fact_rows": len(fact_df), "dim_rows": len(dim_df)}
+    """
+    execution_date = context.get("ds", "unknown")
+    run_id = context.get("run_id", "unknown")
+
+    logger.info("=" * 60)
+    logger.info("TRANSFORM PHASE — INITIATED")
+    logger.info("Execution date : %s", execution_date)
+    logger.info("Run ID         : %s", run_id)
+    logger.info("Operation      : Normalize FRED + BLS → star schema DataFrames")
+    logger.info("Status         : Scaffold stub — ETL integration pending")
+    logger.info("=" * 60)
+
+    return {
+        "phase": "transform",
+        "status": "scaffold_complete",
+        "execution_date": execution_date,
+    }
+
+
+def run_load(**context: dict) -> dict:
+    """
+    Orchestration wrapper for the ETL load phase.
+
+    Phase 2 (ETL Integration) responsibilities:
+      - Retrieve the ETL_DATABASE_URL from the environment (injected by
+        docker-compose.yml via the Airflow common environment block)
+      - Create a SQLAlchemy engine pointed at the ETL Postgres container
+      - Call ensure_tables_exist to create schema on first run
+      - Upsert fact rows (insert new, update changed, skip unchanged)
+      - Upsert dimension rows
+      - Log final statistics: {inserted: N, updated: N, unchanged: N}
+
+    The upsert strategy ensures this task is fully idempotent: re-running
+    the load on the same data set produces no duplicate rows.
+
+    Args:
+        **context: Airflow task execution context.
+
+    Returns:
+        dict: Final pipeline statistics pushed to XCom.
+
+    ETL_INTEGRATION: Replace stub body with:
+        import sys, os
+        sys.path.insert(0, "/opt/airflow/etl")
+        from src.load import ensure_tables_exist, upsert_observations, upsert_dim_series
+        from sqlalchemy import create_engine
+
+        etl_db_url = os.environ["ETL_DATABASE_URL"]
+        engine = create_engine(etl_db_url)
+
+        ensure_tables_exist(engine)
+        obs_stats = upsert_observations(fact_df, engine)
+        dim_stats = upsert_dim_series(dim_df, engine)
+
+        logger.info("Load complete — obs: %s | dim: %s", obs_stats, dim_stats)
+        return {"observations": obs_stats, "dim_series": dim_stats}
+    """
+    execution_date = context.get("ds", "unknown")
+    run_id = context.get("run_id", "unknown")
+
+    # In Phase 2, this will validate the env var is present before proceeding.
+    etl_db_url_present = bool(os.environ.get("ETL_DATABASE_URL"))
+
+    logger.info("=" * 60)
+    logger.info("LOAD PHASE — INITIATED")
+    logger.info("Execution date      : %s", execution_date)
+    logger.info("Run ID              : %s", run_id)
+    logger.info("Target DB           : ETL PostgreSQL (postgres-etl:5432)")
+    logger.info("ETL_DATABASE_URL set: %s", etl_db_url_present)
+    logger.info("Status              : Scaffold stub — ETL integration pending")
+    logger.info("=" * 60)
+
+    return {
+        "phase": "load",
+        "status": "scaffold_complete",
+        "execution_date": execution_date,
+        "etl_database_url_present": etl_db_url_present,
+    }
+
+
+# ---------------------------------------------------------------------------
+# DAG Definition
+# ---------------------------------------------------------------------------
+# The `with DAG(...)` context manager registers all operators defined
+# inside the block with this DAG instance. Airflow's scheduler discovers
+# this `dag` object when it scans the dags/ directory.
+# ---------------------------------------------------------------------------
+with DAG(
+    dag_id="economic_data_pipeline",
+    description=(
+        "Daily orchestration of the U.S. macroeconomic indicator ETL pipeline. "
+        "Ingests 14 series from the FRED and BLS public APIs, normalizes data "
+        "to a tidy star schema, and upserts fact and dimension tables into "
+        "PostgreSQL. Orchestration only — all business logic lives in "
+        "the economic-data-etl module."
+    ),
+    default_args=default_args,
+    schedule_interval="@daily",
+    # Disable historical backfill on first DAG activation.
+    # The pipeline is designed to run forward from today, not to replay history.
+    catchup=False,
+    # Enforce single active run. The ETL is stateful (database upserts) and
+    # must not run concurrently with itself to prevent data races.
+    max_active_runs=1,
+    # Tags for Airflow UI filtering. Use these to find this DAG quickly.
+    tags=["economic-data", "etl", "production", "postgres"],
+    # Enable the DAG-level doc panel in the Airflow UI.
+    doc_md=__doc__,
+) as dag:
+
+    # -----------------------------------------------------------------------
+    # Task 1: Extract
+    # -----------------------------------------------------------------------
+    # Fetches raw data from the FRED and BLS public APIs via the ETL extract
+    # module. The extract is idempotent — repeated runs with unchanged API
+    # data produce no new file writes (SHA-256 hash comparison).
+    # -----------------------------------------------------------------------
+    extract_task = PythonOperator(
+        task_id="extract_economic_data",
+        python_callable=run_extract,
+        doc_md="""
+## Extract
+
+Calls `fetch_fred_data()` and `fetch_bls_data()` from `economic-data-etl/src/extract.py`.
+
+**Sources:**
+- **FRED API** — 9 macroeconomic series (GDP, CPI, Fed Funds Rate, etc.)
+- **BLS API** — 5 labor and price series (wages, CPI urban, gas prices, etc.)
+
+**Idempotency:** SHA-256 hashing of API responses prevents redundant
+file writes. Re-running a failed extract is always safe.
+
+**Retry behavior:** Up to 3 retries with 5-minute delay, as set in
+`default_args`. Handles FRED 429/503 and BLS transient errors.
+        """,
+    )
+
+    # -----------------------------------------------------------------------
+    # Task 2: Transform
+    # -----------------------------------------------------------------------
+    # Normalizes raw API response dicts into typed pandas DataFrames.
+    # Produces a long-format fact table (date, series_id, value) and a
+    # dimension table (series metadata). Pure functional transformation —
+    # no database writes.
+    # -----------------------------------------------------------------------
+    transform_task = PythonOperator(
+        task_id="transform_economic_data",
+        python_callable=run_transform,
+        doc_md="""
+## Transform
+
+Calls the transform functions from `economic-data-etl/src/transform.py`.
+
+**Operations:**
+- `parse_fred_observations()` — FRED dict → typed DataFrame
+- `parse_bls_batch()` — BLS batch response → typed DataFrame
+- `combine_fact_tables()` — merge into long-format fact table
+- `build_dim_series()` — construct series dimension table
+
+**Missing value handling:** FRED encodes missing as `"."`, BLS as `"-"`.
+Both are normalized to `NaN` by the ETL transform layer.
+        """,
+    )
+
+    # -----------------------------------------------------------------------
+    # Task 3: Load
+    # -----------------------------------------------------------------------
+    # Upserts normalized fact and dimension DataFrames into the ETL
+    # PostgreSQL database. Uses an upsert strategy: insert new rows,
+    # update changed rows, skip unchanged rows. Reports final statistics.
+    # -----------------------------------------------------------------------
+    load_task = PythonOperator(
+        task_id="load_economic_data",
+        python_callable=run_load,
+        doc_md="""
+## Load
+
+Calls the load functions from `economic-data-etl/src/load.py`.
+
+**Operations:**
+- `ensure_tables_exist()` — idempotent schema creation
+- `upsert_observations()` — fact table upsert (insert/update/skip)
+- `upsert_dim_series()` — dimension table upsert
+
+**Database:** ETL PostgreSQL container (`postgres-etl:5432`).
+Connection string sourced from `ETL_DATABASE_URL` environment variable.
+
+**Output stats:** `{"inserted": N, "updated": N, "unchanged": N}`
+        """,
+    )
+
+    # -----------------------------------------------------------------------
+    # Task Dependency Chain
+    # -----------------------------------------------------------------------
+    # Defines the execution order using Airflow's bitshift operator.
+    # This creates directed edges in the DAG's task graph:
+    #
+    #   extract_economic_data
+    #          │
+    #          ▼
+    #   transform_economic_data
+    #          │
+    #          ▼
+    #   load_economic_data
+    #
+    # The linear chain enforces sequential execution: transform will not
+    # start until extract succeeds, and load will not start until transform
+    # succeeds. A failure in any task halts the downstream chain and
+    # triggers the retry policy defined in default_args.
+    # -----------------------------------------------------------------------
+    extract_task >> transform_task >> load_task
