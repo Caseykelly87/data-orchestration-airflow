@@ -40,7 +40,7 @@ This project orchestrates Project 1. It does **not** duplicate any ETL logic. Th
   Host :5433 ──────────►│                       │              │
                         └───────────────────────┼─────────────┘
                                                 │
-                         ../economic-data-etl/src/ (mounted in Phase 2)
+                         ../economic-data-etl/ (mounted at /opt/airflow/etl/)
 ```
 
 **Executor:** LocalExecutor — tasks run as subprocesses on the scheduler container. Suitable for single-node deployments. Upgrade to CeleryExecutor for horizontal scaling.
@@ -49,16 +49,16 @@ This project orchestrates Project 1. It does **not** duplicate any ETL logic. Th
 
 ---
 
-## Current Milestone: Initial Commit
-
-This release validates the infrastructure layer:
+## Current Milestone: Phase 2 — ETL Integration ✅
 
 - [x] Docker Compose stack boots cleanly
 - [x] Airflow UI accessible at `http://localhost:8080`
 - [x] Both Postgres databases healthy
 - [x] DAG loads and displays in the UI
-- [x] All structural tests pass
-- [ ] ETL function calls wired (Phase 2)
+- [x] All structural tests pass (27 tests)
+- [x] ETL volume mounted at `/opt/airflow/etl/`
+- [x] Live FRED + BLS extract, transform, load wired end-to-end
+- [x] 5,817 FRED rows + 264 BLS rows confirmed in `postgres-etl`
 
 ---
 
@@ -290,7 +290,7 @@ tests/test_dag_structure.py::TestDagSchedule::test_dag_schedule_is_daily PASSED
 tests/test_dag_structure.py::TestDagSchedule::test_dag_catchup_is_disabled PASSED
 tests/test_dag_structure.py::TestDagSchedule::test_dag_max_active_runs PASSED
 tests/test_dag_structure.py::TestDefaultArgs::test_default_args_exist PASSED
-... (all 22 tests pass)
+... (all 27 tests pass)
 ```
 
 ---
@@ -346,8 +346,8 @@ data-orchestration-airflow/
 | `POSTGRES_ETL_PASSWORD` | **Yes** | ETL data DB password. |
 | `POSTGRES_ETL_DB` | **Yes** | ETL data DB name. |
 | `POSTGRES_ETL_PORT` | No | Host port for ETL DB. Default: `5433`. |
-| `FRED_API_KEY` | Phase 2 | FRED API key for ETL extract tasks. |
-| `BLS_API_KEY` | Phase 2 | BLS API key for ETL extract tasks. |
+| `FRED_API_KEY` | **Yes** | FRED API key for ETL extract tasks. |
+| `BLS_API_KEY` | **Yes** | BLS API key for ETL extract tasks. |
 
 ---
 
@@ -360,12 +360,11 @@ data-orchestration-airflow/
 - Skeleton DAG with correct structure
 - Full structural test suite (22 tests)
 
-### Phase 2 — ETL Integration (next)
-- Mount `../economic-data-etl/` into Airflow container
-- Replace scaffold task stubs with live ETL function calls
-- Add XCom data contracts between tasks
-- Migrate `economic-data-etl` from SQLite to the `postgres-etl` container
-- End-to-end integration test
+### Phase 2 — ETL Integration ✅
+- ETL project mounted into Airflow container
+- Live task callables: extract → transform → load via XCom
+- Full FRED + BLS historical load confirmed in `postgres-etl`
+- 27 structural tests passing
 
 ### Phase 3 — Observability
 - Airflow alerting (email or Slack on failure)

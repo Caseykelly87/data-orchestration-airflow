@@ -45,30 +45,13 @@ production purposes:
   - **Future compatibility**: dbt integration and cloud deployment can
     be added by modifying this file, not the ETL layer.
 
-Current Milestone: Initial Commit (Infrastructure Validation)
---------------------------------------------------------------
-Task callables in this file are SCAFFOLD STUBS. They log intent and
-confirm that the Airflow scheduler can discover, parse, and execute
-this DAG correctly. No ETL functions are called yet.
-
-ETL integration is the NEXT milestone. Integration points are marked
-with `# ETL_INTEGRATION:` comments that specify exactly which functions
-to import and call.
-
-ETL Integration Plan (Phase 2)
---------------------------------
-Mounting strategy: The economic-data-etl project is mounted into the
-Airflow container at /opt/airflow/etl/ via docker-compose.yml. Tasks
-will import from that path:
-
-    import sys
-    sys.path.insert(0, "/opt/airflow/etl")
-    from src.extract import fetch_fred_data, fetch_bls_data
-    ...
-
-Database: The ETL data Postgres container is accessible within the
-Docker network at host `postgres-etl:5432`. The connection string is
-injected via the ETL_DATABASE_URL environment variable.
+ETL Integration
+---------------
+economic-data-etl is mounted at /opt/airflow/etl/. Each task callable
+imports from src/ at runtime via sys.path. Inter-task data passes via
+XCom: extract returns raw API dicts, transform returns DataFrames
+serialised as JSON, load upserts into postgres-etl using
+ETL_DATABASE_URL.
 """
 
 import logging
@@ -130,202 +113,92 @@ default_args = {
 # ---------------------------------------------------------------------------
 # Task Callables
 # ---------------------------------------------------------------------------
-# These functions are the boundary between Airflow and the ETL layer.
-# In the Initial Commit milestone, they are scaffolded stubs.
-# In Phase 2 (ETL Integration), they import and call ETL functions.
-#
-# Each callable receives Airflow's task context dict via **context.
-# Airflow injects: ds (execution date string), ds_nodash, run_id,
-# task_instance, dag_run, conf, and more.
+# Each callable imports from /opt/airflow/etl at runtime. Inter-task data
+# flows via XCom — PythonOperator pushes the return value automatically.
 # ---------------------------------------------------------------------------
 
 def run_extract(**context: dict) -> dict:
     """
-    Orchestration wrapper for the ETL extract phase.
-
-    Phase 2 (ETL Integration) responsibilities:
-      - Import fetch_fred_data and fetch_bls_data from the ETL layer
-      - Iterate over FRED_SERIES and fetch each series individually
-      - Fetch all BLS_SERIES in a single batch request
-      - Return a status dict pushed to XCom for downstream tasks
-
-    The ETL extract functions are idempotent: SHA-256 hashing of API
-    responses prevents redundant file writes on unchanged data. This
-    means re-running a failed extract task is always safe.
-
-    Args:
-        **context: Airflow task execution context. Key fields:
-            - context["ds"]:           execution date as "YYYY-MM-DD"
-            - context["run_id"]:       unique identifier for this DAG run
-            - context["task_instance"]: TaskInstance object for XCom push
-
-    Returns:
-        dict: Status payload pushed automatically to XCom by PythonOperator.
-              Downstream tasks can retrieve it via:
-              context["task_instance"].xcom_pull(task_ids="extract_economic_data")
-
-    ETL_INTEGRATION: Replace stub body with:
-        import sys
-        sys.path.insert(0, "/opt/airflow/etl")
-        from src.extract import fetch_fred_data, fetch_bls_data
-        from src.config import FRED_SERIES, BLS_SERIES
-
-        execution_date = context["ds"]
-        logger.info("Extracting FRED data for %s", execution_date)
-        fred_data = {}
-        for name, series_id in FRED_SERIES.items():
-            fred_data[name] = fetch_fred_data(series_id)
-
-        logger.info("Extracting BLS data for %s", execution_date)
-        current_year = int(execution_date[:4])
-        bls_data = fetch_bls_data(BLS_SERIES, 2021, current_year)
-
-        return {"fred_series_count": len(fred_data), "bls_batch_complete": True}
+    Fetches all FRED and BLS series via the ETL extract module.
+    Raw API responses are written to data/raw/ (idempotent — SHA-256
+    skips unchanged series). Return value is pushed to XCom for transform.
     """
-    execution_date = context.get("ds", "unknown")
-    run_id = context.get("run_id", "unknown")
+    import sys
+    sys.path.insert(0, "/opt/airflow/etl")
+    from src.extract import fetch_fred_data, fetch_bls_data
+    from src.config import FRED_SERIES, BLS_SERIES
 
-    logger.info("=" * 60)
-    logger.info("EXTRACT PHASE — INITIATED")
-    logger.info("Execution date : %s", execution_date)
-    logger.info("Run ID         : %s", run_id)
-    logger.info("Targets        : FRED API (9 series) + BLS API (5 series)")
-    logger.info("Status         : Scaffold stub — ETL integration pending")
-    logger.info("=" * 60)
+    end_year = int(context["ds"][:4])
 
-    return {
-        "phase": "extract",
-        "status": "scaffold_complete",
-        "execution_date": execution_date,
-        "fred_series_count": 9,
-        "bls_series_count": 5,
-    }
+    logger.info("Extracting %d FRED series", len(FRED_SERIES))
+    fred_data = {}
+    for name, series_id in FRED_SERIES.items():
+        fred_data[name] = fetch_fred_data(series_id)
+
+    logger.info("Extracting BLS batch (2021-%d)", end_year)
+    bls_data = fetch_bls_data(BLS_SERIES, 2021, end_year)
+
+    logger.info("Extract complete: %d FRED series, BLS batch fetched", len(fred_data))
+    return {"fred_data": fred_data, "bls_data": bls_data}
 
 
 def run_transform(**context: dict) -> dict:
     """
-    Orchestration wrapper for the ETL transform phase.
-
-    Phase 2 (ETL Integration) responsibilities:
-      - Pull extract result from XCom to confirm upstream success
-      - Import parse_fred_observations, parse_bls_batch, build_dim_series,
-        and combine_fact_tables from the ETL transform module
-      - Normalize raw API dicts into typed pandas DataFrames
-      - Produce a long-format fact table and a dimension table
-      - Return a status dict for the load task
-
-    The transform step is pure in the functional sense: given the raw
-    data written by extract, it produces the normalized DataFrames.
-    It does not write to the database.
-
-    Args:
-        **context: Airflow task execution context.
-
-    Returns:
-        dict: Status payload pushed to XCom for the load task.
-
-    ETL_INTEGRATION: Replace stub body with:
-        import sys
-        sys.path.insert(0, "/opt/airflow/etl")
-        from src.transform import (
-            parse_fred_observations,
-            parse_bls_batch,
-            build_dim_series,
-            combine_fact_tables,
-        )
-        from src.config import FRED_SERIES, BLS_SERIES
-
-        # XCom pull not required here — transform reads from the file
-        # system paths set by the extract phase (data/raw/).
-
-        fred_frames = [
-            parse_fred_observations(fred_data[name], series_id, name)
-            for name, series_id in FRED_SERIES.items()
-            if fred_data.get(name) is not None
-        ]
-        bls_frame  = parse_bls_batch(bls_data, BLS_SERIES)
-        fact_df    = combine_fact_tables(fred_frames, bls_frame)
-        dim_df     = build_dim_series(FRED_SERIES, BLS_SERIES)
-
-        return {"fact_rows": len(fact_df), "dim_rows": len(dim_df)}
+    Pulls raw API dicts from XCom, normalises them into a long-format
+    fact DataFrame and a dimension DataFrame using the ETL transform
+    module. Serialises both to JSON and pushes to XCom for the load task.
     """
-    execution_date = context.get("ds", "unknown")
-    run_id = context.get("run_id", "unknown")
+    import sys
+    sys.path.insert(0, "/opt/airflow/etl")
+    from src.transform import (
+        parse_fred_observations,
+        parse_bls_batch,
+        build_dim_series,
+        combine_fact_tables,
+    )
+    from src.config import FRED_SERIES, BLS_SERIES
 
-    logger.info("=" * 60)
-    logger.info("TRANSFORM PHASE — INITIATED")
-    logger.info("Execution date : %s", execution_date)
-    logger.info("Run ID         : %s", run_id)
-    logger.info("Operation      : Normalize FRED + BLS → star schema DataFrames")
-    logger.info("Status         : Scaffold stub — ETL integration pending")
-    logger.info("=" * 60)
+    extract_result = context["ti"].xcom_pull(task_ids="extract_economic_data")
+    fred_data = extract_result["fred_data"]
+    bls_data  = extract_result["bls_data"]
 
-    return {
-        "phase": "transform",
-        "status": "scaffold_complete",
-        "execution_date": execution_date,
-    }
+    fred_frames = [
+        parse_fred_observations(fred_data[name], series_id, name)
+        for name, series_id in FRED_SERIES.items()
+        if fred_data.get(name) is not None
+    ]
+    bls_frame = parse_bls_batch(bls_data, BLS_SERIES)
+    fact_df   = combine_fact_tables(fred_frames, bls_frame)
+    dim_df    = build_dim_series(FRED_SERIES, BLS_SERIES)
+
+    logger.info("Transform complete: %d fact rows, %d dim rows", len(fact_df), len(dim_df))
+    return {"fact_df": fact_df.to_json(date_format="iso"), "dim_df": dim_df.to_json()}
 
 
 def run_load(**context: dict) -> dict:
     """
-    Orchestration wrapper for the ETL load phase.
-
-    Phase 2 (ETL Integration) responsibilities:
-      - Retrieve the ETL_DATABASE_URL from the environment (injected by
-        docker-compose.yml via the Airflow common environment block)
-      - Create a SQLAlchemy engine pointed at the ETL Postgres container
-      - Call ensure_tables_exist to create schema on first run
-      - Upsert fact rows (insert new, update changed, skip unchanged)
-      - Upsert dimension rows
-      - Log final statistics: {inserted: N, updated: N, unchanged: N}
-
-    The upsert strategy ensures this task is fully idempotent: re-running
-    the load on the same data set produces no duplicate rows.
-
-    Args:
-        **context: Airflow task execution context.
-
-    Returns:
-        dict: Final pipeline statistics pushed to XCom.
-
-    ETL_INTEGRATION: Replace stub body with:
-        import sys, os
-        sys.path.insert(0, "/opt/airflow/etl")
-        from src.load import ensure_tables_exist, upsert_observations, upsert_dim_series
-        from sqlalchemy import create_engine
-
-        etl_db_url = os.environ["ETL_DATABASE_URL"]
-        engine = create_engine(etl_db_url)
-
-        ensure_tables_exist(engine)
-        obs_stats = upsert_observations(fact_df, engine)
-        dim_stats = upsert_dim_series(dim_df, engine)
-
-        logger.info("Load complete — obs: %s | dim: %s", obs_stats, dim_stats)
-        return {"observations": obs_stats, "dim_series": dim_stats}
+    Pulls serialised DataFrames from XCom, creates a SQLAlchemy engine
+    from ETL_DATABASE_URL, and upserts fact and dimension rows into the
+    ETL PostgreSQL database via the ETL load module.
     """
-    execution_date = context.get("ds", "unknown")
-    run_id = context.get("run_id", "unknown")
+    import io
+    import sys
+    sys.path.insert(0, "/opt/airflow/etl")
+    import pandas as pd
+    from sqlalchemy import create_engine
+    from src.load import ensure_tables_exist, upsert_observations, upsert_dim_series
 
-    # In Phase 2, this will validate the env var is present before proceeding.
-    etl_db_url_present = bool(os.environ.get("ETL_DATABASE_URL"))
+    transform_result = context["ti"].xcom_pull(task_ids="transform_economic_data")
+    fact_df = pd.read_json(io.StringIO(transform_result["fact_df"]))
+    dim_df  = pd.read_json(io.StringIO(transform_result["dim_df"]))
 
-    logger.info("=" * 60)
-    logger.info("LOAD PHASE — INITIATED")
-    logger.info("Execution date      : %s", execution_date)
-    logger.info("Run ID              : %s", run_id)
-    logger.info("Target DB           : ETL PostgreSQL (postgres-etl:5432)")
-    logger.info("ETL_DATABASE_URL set: %s", etl_db_url_present)
-    logger.info("Status              : Scaffold stub — ETL integration pending")
-    logger.info("=" * 60)
+    engine = create_engine(os.environ["ETL_DATABASE_URL"], future=True)
+    ensure_tables_exist(engine)
+    obs_stats = upsert_observations(fact_df, engine)
+    dim_stats = upsert_dim_series(dim_df, engine)
 
-    return {
-        "phase": "load",
-        "status": "scaffold_complete",
-        "execution_date": execution_date,
-        "etl_database_url_present": etl_db_url_present,
-    }
+    logger.info("Load complete — observations: %s | dim_series: %s", obs_stats, dim_stats)
+    return {"observations": obs_stats, "dim_series": dim_stats}
 
 
 # ---------------------------------------------------------------------------
