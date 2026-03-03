@@ -44,7 +44,6 @@ env/
 ENV/
 .env.local
 .env.*.local
-.env.example
 
 # Distribution / packaging
 *.egg-info/

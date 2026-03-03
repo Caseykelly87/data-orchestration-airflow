@@ -255,6 +255,48 @@ class TestDefaultArgs:
             "depends_on_past must be explicitly set in default_args"
         )
 
+    def test_email_on_failure_is_enabled(self, dag):
+        """email_on_failure must be True — SMTP is configured for Phase 3 alerting."""
+        assert dag.default_args.get("email_on_failure") is True, (
+            "email_on_failure must be True now that SMTP is configured"
+        )
+
+    def test_alert_email_is_configured(self, dag):
+        """email must be a non-empty list — defines where failure alerts are sent."""
+        email = dag.default_args.get("email")
+        assert email is not None, "default_args must include 'email'"
+        assert isinstance(email, list), f"email must be a list, got {type(email)}"
+        assert len(email) > 0, "email list must not be empty"
+
+
+# ---------------------------------------------------------------------------
+# SLA Tests
+# ---------------------------------------------------------------------------
+
+class TestDagSLA:
+    """Validate SLA configuration for production observability."""
+
+    def test_sla_is_configured(self, dag):
+        """SLA must be set in default_args to enable Airflow SLA miss tracking."""
+        assert "sla" in dag.default_args, (
+            "sla must be set in default_args for SLA miss detection"
+        )
+
+    def test_sla_is_timedelta(self, dag):
+        """SLA must be a timedelta — Airflow requires this type."""
+        sla = dag.default_args.get("sla")
+        assert isinstance(sla, timedelta), (
+            f"sla must be a timedelta, got {type(sla)}"
+        )
+
+    def test_sla_is_meaningful(self, dag):
+        """SLA must be at least 1 hour — appropriate minimum for a daily pipeline."""
+        sla = dag.default_args.get("sla")
+        assert sla is not None
+        assert sla.total_seconds() >= 3600, (
+            f"sla must be >= 1 hour for a daily pipeline, got {sla}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Task Existence Tests
