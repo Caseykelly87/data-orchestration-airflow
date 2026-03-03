@@ -24,11 +24,6 @@
 #     --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.2/constraints-3.12.txt"
 #   pip install -r requirements.txt
 #
-# FUTURE: ETL INTEGRATION (Phase 2)
-# ----------------------------------
-# When the ETL layer is wired into the DAG, uncomment the ETL dependencies
-# section. These packages are already present in the Airflow base image
-# but are listed here for explicit documentation of the ETL contract.
 # =============================================================================
 
 # -----------------------------------------------------------------------------

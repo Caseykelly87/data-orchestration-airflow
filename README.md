@@ -55,7 +55,7 @@ This project orchestrates Project 1. It does **not** duplicate any ETL logic. Th
 - [x] Airflow UI accessible at `http://localhost:8080`
 - [x] Both Postgres databases healthy
 - [x] DAG loads and displays in the UI
-- [x] All structural tests pass (32 tests)
+- [x] All structural tests pass (35 tests)
 - [x] ETL volume mounted at `/opt/airflow/etl/`
 - [x] Live FRED + BLS extract, transform, load wired end-to-end
 - [x] 5,817 FRED rows + 264 BLS rows confirmed in `postgres-etl`
@@ -296,7 +296,7 @@ tests/test_dag_structure.py::TestDagSchedule::test_dag_schedule_is_daily PASSED
 tests/test_dag_structure.py::TestDagSchedule::test_dag_catchup_is_disabled PASSED
 tests/test_dag_structure.py::TestDagSchedule::test_dag_max_active_runs PASSED
 tests/test_dag_structure.py::TestDefaultArgs::test_default_args_exist PASSED
-... (all 32 tests pass)
+... (all 35 tests pass)
 ```
 
 ---
@@ -314,7 +314,7 @@ data-orchestration-airflow/
 │
 ├── tests/
 │   ├── __init__.py
-│   └── test_dag_structure.py          # 32 structural tests (TDD)
+│   └── test_dag_structure.py          # 35 structural tests (TDD)
 │
 ├── logs/                              # Airflow task logs (bind-mounted, git-ignored)
 │   └── .gitkeep
@@ -377,7 +377,7 @@ data-orchestration-airflow/
 ### Phase 3 — Observability ✅
 - Gmail SMTP alerting (`email_on_failure=True`, alert sent to `AIRFLOW_ADMIN_EMAIL`)
 - SLA of 2 hours configured on all tasks via `default_args`
-- 5 new structural tests covering alert config and SLA (32 total)
+- 5 new structural tests covering alert config and SLA (35 total)
 
 ### Phase 4 — CI/CD and Cloud Readiness
 - GitHub Actions CI workflow (lint + structural tests on every push/PR)
