@@ -49,16 +49,19 @@ This project orchestrates Project 1. It does **not** duplicate any ETL logic. Th
 
 ---
 
-## Current Milestone: Phase 2 — ETL Integration ✅
+## Current Milestone: Phase 3 — Observability ✅
 
 - [x] Docker Compose stack boots cleanly
 - [x] Airflow UI accessible at `http://localhost:8080`
 - [x] Both Postgres databases healthy
 - [x] DAG loads and displays in the UI
-- [x] All structural tests pass (27 tests)
+- [x] All structural tests pass (32 tests)
 - [x] ETL volume mounted at `/opt/airflow/etl/`
 - [x] Live FRED + BLS extract, transform, load wired end-to-end
 - [x] 5,817 FRED rows + 264 BLS rows confirmed in `postgres-etl`
+- [x] Gmail SMTP alerting configured and confirmed working
+- [x] SLA of 2 hours set on all tasks via `default_args`
+- [x] `email_on_failure=True` — alerts sent to `AIRFLOW_ADMIN_EMAIL` on task failure
 
 ---
 
@@ -110,6 +113,8 @@ POSTGRES_AIRFLOW_PASSWORD=<choose a password>
 POSTGRES_ETL_PASSWORD=<choose a password>
 FRED_API_KEY=<your FRED key>
 BLS_API_KEY=<your BLS key>
+AIRFLOW_SMTP_USER=<your-gmail@gmail.com>
+AIRFLOW_SMTP_PASSWORD=<16-char Gmail App Password>
 ```
 
 ### 3. Create required directories
@@ -276,7 +281,8 @@ pytest --cov=dags --cov-report=term-missing
 
 ```bash
 # Run tests inside the scheduler container (Airflow is already installed)
-docker exec airflow_scheduler pytest /opt/airflow/tests/ -v
+# Note: pytest 8.x must be pre-installed as root; see test setup notes above
+docker exec airflow_scheduler bash -c "cd /opt/airflow && python -m pytest tests/ -v"
 ```
 
 ### Expected output
@@ -290,7 +296,7 @@ tests/test_dag_structure.py::TestDagSchedule::test_dag_schedule_is_daily PASSED
 tests/test_dag_structure.py::TestDagSchedule::test_dag_catchup_is_disabled PASSED
 tests/test_dag_structure.py::TestDagSchedule::test_dag_max_active_runs PASSED
 tests/test_dag_structure.py::TestDefaultArgs::test_default_args_exist PASSED
-... (all 27 tests pass)
+... (all 32 tests pass)
 ```
 
 ---
@@ -304,11 +310,11 @@ data-orchestration-airflow/
 │   ├── __init__.py                    # Package init (enables test imports)
 │   ├── economic_pipeline_dag.py       # Main DAG: extract → transform → load
 │   └── tasks/
-│       └── __init__.py                # Reserved for Phase 2 task wrappers
+│       └── __init__.py                # Reserved for future task wrappers
 │
 ├── tests/
 │   ├── __init__.py
-│   └── test_dag_structure.py          # 22 structural tests (TDD)
+│   └── test_dag_structure.py          # 32 structural tests (TDD)
 │
 ├── logs/                              # Airflow task logs (bind-mounted, git-ignored)
 │   └── .gitkeep
@@ -338,7 +344,7 @@ data-orchestration-airflow/
 | `AIRFLOW_WEBSERVER_PORT` | No | Host port for Airflow UI. Default: `8080`. |
 | `AIRFLOW_ADMIN_USER` | No | Admin username. Default: `admin`. |
 | `AIRFLOW_ADMIN_PASSWORD` | **Yes** | Admin password for Airflow UI. |
-| `AIRFLOW_ADMIN_EMAIL` | No | Admin email. Default: `admin@example.com`. |
+| `AIRFLOW_ADMIN_EMAIL` | No | Admin email. Default: `admin@example.com`. Also used as the failure alert recipient. |
 | `POSTGRES_AIRFLOW_USER` | **Yes** | Airflow metadata DB username. |
 | `POSTGRES_AIRFLOW_PASSWORD` | **Yes** | Airflow metadata DB password. |
 | `POSTGRES_AIRFLOW_DB` | **Yes** | Airflow metadata DB name. |
@@ -348,12 +354,14 @@ data-orchestration-airflow/
 | `POSTGRES_ETL_PORT` | No | Host port for ETL DB. Default: `5433`. |
 | `FRED_API_KEY` | **Yes** | FRED API key for ETL extract tasks. |
 | `BLS_API_KEY` | **Yes** | BLS API key for ETL extract tasks. |
+| `AIRFLOW_SMTP_USER` | **Yes** | Gmail address used as SMTP sender and for alert emails. |
+| `AIRFLOW_SMTP_PASSWORD` | **Yes** | Gmail App Password (16 chars, requires 2FA). See `.env.example`. |
 
 ---
 
 ## Development Roadmap
 
-### Phase 1 — Initial Commit (current) ✅
+### Phase 1 — Initial Commit ✅
 - Docker Compose stack
 - Airflow infrastructure (webserver, scheduler, metadata DB)
 - ETL data PostgreSQL container
@@ -366,15 +374,15 @@ data-orchestration-airflow/
 - Full FRED + BLS historical load confirmed in `postgres-etl`
 - 27 structural tests passing
 
-### Phase 3 — Observability
-- Airflow alerting (email or Slack on failure)
-- DAG SLA configuration
-- Metrics export
+### Phase 3 — Observability ✅
+- Gmail SMTP alerting (`email_on_failure=True`, alert sent to `AIRFLOW_ADMIN_EMAIL`)
+- SLA of 2 hours configured on all tasks via `default_args`
+- 5 new structural tests covering alert config and SLA (32 total)
 
-### Phase 4 — Cloud Readiness
-- Replace Docker Postgres with AWS RDS
-- Add CI/CD pipeline (GitHub Actions)
+### Phase 4 — CI/CD and Cloud Readiness
+- GitHub Actions CI workflow (lint + structural tests on every push/PR)
 - Environment-specific configuration (dev/staging/prod)
+- Replace Docker Postgres with AWS RDS
 - dbt integration for transformation layer
 
 ---
