@@ -98,9 +98,17 @@ default_args = {
     "retries": 3,
     "retry_delay": timedelta(minutes=5),
 
-    # Alert configuration. Set to True and configure SMTP/Slack in
-    # Airflow Admin → Connections for production alerting.
-    "email_on_failure": False,
+    # SLA: alert if any task has not completed within 2 hours of its
+    # scheduled start. Worst-case pipeline runtime (3 retries × 5 min
+    # delay × 3 tasks) is ~45 minutes — 2 hours gives comfortable headroom
+    # while still catching genuine hangs before the next daily window.
+    "sla": timedelta(hours=2),
+
+    # Alert recipients. Reads AIRFLOW_ADMIN_EMAIL from the container
+    # environment (set in docker-compose.yml). Failures and SLA misses
+    # are emailed to this address via the configured Gmail SMTP relay.
+    "email": [os.getenv("AIRFLOW_ADMIN_EMAIL", "admin@example.com")],
+    "email_on_failure": True,
     "email_on_retry": False,
 
     # Anchors the DAG schedule. Setting this in the past with catchup=False

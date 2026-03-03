@@ -115,9 +115,21 @@ x-airflow-common:
     FRED_API_KEY: ${FRED_API_KEY}
     BLS_API_KEY: ${BLS_API_KEY}
 
-    # Additional packages installed on top of the base Airflow image at startup.
-    # python-dotenv is required by the ETL's config.py import chain.
-    _PIP_ADDITIONAL_REQUIREMENTS: "python-dotenv"
+    # -- Alerting (Gmail SMTP) ------------------------------------------------
+    # Airflow uses these settings to send task failure emails and SLA miss
+    # notifications. Requires a Gmail App Password — not your regular password.
+    # 2FA must be enabled on the account. Generate an App Password at:
+    #   https://myaccount.google.com/apppasswords
+    AIRFLOW__SMTP__SMTP_HOST: smtp.gmail.com
+    AIRFLOW__SMTP__SMTP_STARTTLS: "true"
+    AIRFLOW__SMTP__SMTP_SSL: "false"
+    AIRFLOW__SMTP__SMTP_PORT: "587"
+    AIRFLOW__SMTP__SMTP_USER: ${AIRFLOW_SMTP_USER}
+    AIRFLOW__SMTP__SMTP_PASSWORD: ${AIRFLOW_SMTP_PASSWORD}
+    AIRFLOW__SMTP__SMTP_MAIL_FROM: ${AIRFLOW_SMTP_USER}
+
+    # Alert recipient — passed to the DAG's default_args email list.
+    AIRFLOW_ADMIN_EMAIL: ${AIRFLOW_ADMIN_EMAIL:-admin@example.com}
 
   volumes:
     # Bind mounts: changes on the host are immediately visible inside containers.
