@@ -1,0 +1,90 @@
+# =============================================================================
+# data-orchestration-airflow — Production Docker Compose Overlay
+# =============================================================================
+#
+# USAGE
+# -----
+# Apply on top of the base configuration:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# This file overrides only the settings that differ in production.
+# The base docker-compose.yml remains unchanged and continues to work
+# as-is for local development.
+#
+# WHAT THIS OVERLAY CHANGES
+# -------------------------
+# 1. Removes the host port binding on postgres-etl.
+#    In production the ETL database sits inside a private VPC. External
+#    access goes through a bastion host or VPN — not a host port.
+#
+# 2. Injects AIRFLOW_ENV=production into all Airflow containers.
+#    Task callables and config modules can read this to apply
+#    environment-specific behaviour (stricter error handling, no
+#    debug-level logging, etc.).
+#
+# MOVING TO AWS RDS (Phase 4c)
+# ----------------------------
+# When replacing the local Postgres containers with AWS RDS:
+#
+#   1. Provision two RDS instances (PostgreSQL 16):
+#        rds-airflow-metadata   →  replaces postgres-airflow container
+#        rds-etl-data           →  replaces postgres-etl container
+#
+#   2. In your production .env, update the connection strings:
+#        POSTGRES_AIRFLOW_HOST=<rds-metadata-endpoint>.rds.amazonaws.com
+#        POSTGRES_ETL_HOST=<rds-etl-endpoint>.rds.amazonaws.com
+#
+#   3. Override AIRFLOW__DATABASE__SQL_ALCHEMY_CONN and ETL_DATABASE_URL
+#      in this file to reference the RDS hostnames instead of the Docker
+#      service names (postgres-airflow, postgres-etl).
+#
+#   4. The local postgres-airflow and postgres-etl services can then be
+#      removed from this overlay entirely — Airflow will connect directly
+#      to RDS over the network.
+#
+# NOTE ON LOCAL POSTGRES SERVICES
+# --------------------------------
+# This overlay does not disable the local Postgres containers. In a
+# full production deployment these would be removed from the compose file
+# and replaced with RDS endpoints. This overlay demonstrates the
+# configuration layer separation; the actual container removal is done
+# when the RDS instances are provisioned.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # postgres-etl — Remove host port exposure in production.
+  #
+  # The ETL database host port (5433) is only needed for local development
+  # inspection (psql, DBeaver, pgAdmin). In production the database is
+  # accessed only from within the Docker/VPC network. Exposing it on a
+  # host port in production is an unnecessary attack surface.
+  #
+  # `ports: []` replaces the base file's port binding with an empty list,
+  # effectively removing the host-side mapping while keeping the container
+  # reachable on port 5432 within the internal Docker network.
+  # ---------------------------------------------------------------------------
+  postgres-etl:
+    ports: []
+
+  # ---------------------------------------------------------------------------
+  # Airflow services — Inject production environment flag.
+  #
+  # AIRFLOW_ENV is not an Airflow built-in. It is a convention available to
+  # DAG callables and config modules via os.environ.get("AIRFLOW_ENV").
+  # Use it to gate debug logging, relax/tighten retry policies, or select
+  # environment-specific secrets backends.
+  # ---------------------------------------------------------------------------
+  airflow-init:
+    environment:
+      AIRFLOW_ENV: production
+
+  airflow-webserver:
+    environment:
+      AIRFLOW_ENV: production
+
+  airflow-scheduler:
+    environment:
+      AIRFLOW_ENV: production

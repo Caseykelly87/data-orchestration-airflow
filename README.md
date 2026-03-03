@@ -170,6 +170,24 @@ docker compose down
 docker compose down -v
 ```
 
+### Production configuration overlay
+
+A `docker-compose.prod.yml` overlay is provided for production deployments. Apply it on top of the base file:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+Key differences from the base (local dev) configuration:
+
+| Setting | Local dev | Production overlay |
+|---|---|---|
+| `postgres-etl` host port | `5433` exposed | Removed — DB accessed within VPC only |
+| `AIRFLOW_ENV` | not set | `production` — available to task callables |
+| Postgres services | local containers | Replace with AWS RDS (Phase 4c) |
+
+See `docker-compose.prod.yml` for full details and the RDS migration path.
+
 ---
 
 ## Accessing the Airflow UI
@@ -383,7 +401,8 @@ data-orchestration-airflow/
 
 ### Phase 4 — CI/CD and Cloud Readiness
 - [x] GitHub Actions CI workflow (ruff lint + 35 structural tests on every push/PR)
-- [ ] Environment-specific configuration (dev/staging/prod)
+- [x] Production Docker Compose overlay (`docker-compose.prod.yml`) — port hardening, `AIRFLOW_ENV`, RDS migration path documented
+- [ ] Replace Docker Postgres with AWS RDS
 - [ ] Replace Docker Postgres with AWS RDS
 - [ ] dbt integration for transformation layer
 
