@@ -58,7 +58,7 @@ Running the Tests
 """
 
 import pytest
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +243,19 @@ class TestDefaultArgs:
             "email_on_retry must be explicitly set in default_args"
         )
 
+    def test_email_on_retry_is_false(self, dag):
+        """
+        email_on_retry must be False to prevent alert fatigue.
+
+        With retries=3, a single failing task would send 3 emails before
+        the final failure alert. Silencing retry emails keeps the failure
+        alert meaningful — it fires once, on the final failure.
+        """
+        assert dag.default_args.get("email_on_retry") is False, (
+            "email_on_retry must be False. With retries=3, True would send "
+            "3 intermediate emails per task failure before the final alert."
+        )
+
     def test_depends_on_past_is_configured(self, dag):
         """
         depends_on_past must be explicitly set.
@@ -253,6 +266,36 @@ class TestDefaultArgs:
         """
         assert "depends_on_past" in dag.default_args, (
             "depends_on_past must be explicitly set in default_args"
+        )
+
+    def test_depends_on_past_is_false(self, dag):
+        """
+        depends_on_past must be False.
+
+        True would cause every task to wait for the same task in the
+        previous DAG run to have succeeded. After any failure, all
+        subsequent daily runs would be permanently blocked until the
+        failed run is manually cleared — unacceptable for a production
+        daily pipeline.
+        """
+        assert dag.default_args.get("depends_on_past") is False, (
+            "depends_on_past must be False. True blocks all future runs "
+            "after the first failure until manually cleared."
+        )
+
+    def test_start_date_is_set(self, dag):
+        """
+        start_date must be present and be a datetime.
+
+        Airflow requires start_date to compute the first scheduled run.
+        Without it the DAG raises an error on activation. The value
+        should be a fixed past date — combined with catchup=False,
+        Airflow runs from today's schedule, not from start_date.
+        """
+        start_date = dag.default_args.get("start_date")
+        assert start_date is not None, "default_args must include 'start_date'"
+        assert isinstance(start_date, datetime), (
+            f"start_date must be a datetime instance, got {type(start_date)}"
         )
 
     def test_email_on_failure_is_enabled(self, dag):

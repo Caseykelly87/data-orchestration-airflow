@@ -32,7 +32,7 @@ Running Tests
     pytest
 
     # Run inside the Docker scheduler container:
-    docker exec airflow_scheduler pytest /opt/airflow/tests/ -v
+    docker exec airflow_scheduler bash -c "cd /opt/airflow && python -m pytest tests/ -v"
 """
 
 import sys
