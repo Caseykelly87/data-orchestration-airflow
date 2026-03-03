@@ -1,5 +1,7 @@
 # data-orchestration-airflow
 
+[![CI](https://github.com/Caseykelly87/data-orchestration-airflow/actions/workflows/ci.yml/badge.svg)](https://github.com/Caseykelly87/data-orchestration-airflow/actions/workflows/ci.yml)
+
 **Project 2** of a modular data engineering portfolio.
 
 An Apache Airflow orchestration layer that runs the U.S. macroeconomic indicator ETL pipeline (github project 1 `economic-data-etl`) on a daily schedule. Fully containerized with Docker Compose, using separate PostgreSQL instances for Airflow metadata and ETL data.
@@ -380,10 +382,10 @@ data-orchestration-airflow/
 - 5 new structural tests covering alert config and SLA (35 total)
 
 ### Phase 4 — CI/CD and Cloud Readiness
-- GitHub Actions CI workflow (lint + structural tests on every push/PR)
-- Environment-specific configuration (dev/staging/prod)
-- Replace Docker Postgres with AWS RDS
-- dbt integration for transformation layer
+- [x] GitHub Actions CI workflow (ruff lint + 35 structural tests on every push/PR)
+- [ ] Environment-specific configuration (dev/staging/prod)
+- [ ] Replace Docker Postgres with AWS RDS
+- [ ] dbt integration for transformation layer
 
 ---
 
