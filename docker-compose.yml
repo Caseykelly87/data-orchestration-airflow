@@ -111,9 +111,13 @@ x-airflow-common:
     ETL_DATABASE_URL: >-
       postgresql+psycopg2://${POSTGRES_ETL_USER}:${POSTGRES_ETL_PASSWORD}@postgres-etl:5432/${POSTGRES_ETL_DB}
 
-    # API keys for FRED and BLS data sources. Required in Phase 2 (ETL integration).
+    # API keys for FRED and BLS data sources.
     FRED_API_KEY: ${FRED_API_KEY}
     BLS_API_KEY: ${BLS_API_KEY}
+
+    # Additional packages installed on top of the base Airflow image at startup.
+    # python-dotenv is required by the ETL's config.py import chain.
+    _PIP_ADDITIONAL_REQUIREMENTS: "python-dotenv"
 
   volumes:
     # Bind mounts: changes on the host are immediately visible inside containers.
@@ -124,9 +128,7 @@ x-airflow-common:
     - ./plugins:/opt/airflow/plugins
     - ./tests:/opt/airflow/tests
 
-    # Phase 2: Mount the ETL project for import by task callables.
-    # Uncomment when beginning ETL integration:
-    # - ../economic-data-etl:/opt/airflow/etl
+    - ../economic-data-etl:/opt/airflow/etl
 
   depends_on:
     &airflow-common-depends-on

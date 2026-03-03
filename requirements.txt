@@ -38,14 +38,9 @@ pytest>=8.0.0
 pytest-cov>=5.0.0
 
 # -----------------------------------------------------------------------------
-# Future: ETL Integration Dependencies (Phase 2)
+# ETL Integration Dependencies
 # -----------------------------------------------------------------------------
-# Uncomment when the economic-data-etl module is mounted into the container.
-# All of these are available in the apache/airflow base image; listing them
-# here documents the dependency surface of the ETL layer explicitly.
-#
-# pandas>=2.2.0
-# requests>=2.32.0
-# python-dotenv>=1.0.0
-# sqlalchemy>=2.0.0
-# psycopg2-binary>=2.9.9
+# Required by economic-data-etl when mounted at /opt/airflow/etl/.
+# pandas, requests, sqlalchemy, and psycopg2-binary are provided by the
+# base Airflow image. python-dotenv is not and must be installed explicitly.
+python-dotenv>=1.0.0
