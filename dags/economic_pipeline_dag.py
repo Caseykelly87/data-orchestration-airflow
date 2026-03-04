@@ -59,6 +59,7 @@ import os
 from datetime import datetime, timedelta
 
 from airflow import DAG
+from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 
 
@@ -321,6 +322,45 @@ Connection string sourced from `ETL_DATABASE_URL` environment variable.
     )
 
     # -----------------------------------------------------------------------
+    # Task 4: dbt Transform
+    # -----------------------------------------------------------------------
+    # Runs dbt models after the load task has written raw data to postgres-etl.
+    # dbt creates analytics-ready mart tables (materialized) and staging views
+    # on top of the raw fact and dimension tables.
+    #
+    # The dbt project lives at /opt/airflow/dbt/ (bind-mounted from ./dbt/).
+    # profiles.yml is co-located and uses env_var() for all credentials —
+    # no secrets are hardcoded in the dbt project files.
+    #
+    # Models produced:
+    #   views:  stg_observations, stg_dim_series
+    #   tables: mart_gdp, mart_inflation, mart_labor_market, mart_economic_summary
+    # -----------------------------------------------------------------------
+    dbt_task = BashOperator(
+        task_id="dbt_transform",
+        bash_command=(
+            "cd /opt/airflow/dbt && "
+            "dbt run --profiles-dir /opt/airflow/dbt"
+        ),
+        doc_md="""
+## dbt Transform
+
+Runs all dbt models against the ETL PostgreSQL database after `load_economic_data`
+completes. Creates analytics-ready views and tables from the raw loaded data.
+
+**Staging (views):**
+- `stg_observations` — raw fact table with date cast to DATE, null values filtered
+- `stg_dim_series` — clean passthrough of series dimension
+
+**Marts (materialized tables):**
+- `mart_gdp` — GDP, PCE, retail sales, personal savings rate
+- `mart_inflation` — CPI, Fed Funds Rate, BLS price series
+- `mart_labor_market` — unemployment, wages, employment cost index, sentiment
+- `mart_economic_summary` — latest value for each of the 14 economic series
+        """,
+    )
+
+    # -----------------------------------------------------------------------
     # Task Dependency Chain
     # -----------------------------------------------------------------------
     # Defines the execution order using Airflow's bitshift operator.
@@ -333,10 +373,11 @@ Connection string sourced from `ETL_DATABASE_URL` environment variable.
     #          │
     #          ▼
     #   load_economic_data
+    #          │
+    #          ▼
+    #   dbt_transform
     #
-    # The linear chain enforces sequential execution: transform will not
-    # start until extract succeeds, and load will not start until transform
-    # succeeds. A failure in any task halts the downstream chain and
-    # triggers the retry policy defined in default_args.
+    # The linear chain enforces sequential execution. A failure in any task
+    # halts the downstream chain and triggers the retry policy in default_args.
     # -----------------------------------------------------------------------
-    extract_task >> transform_task >> load_task
+    extract_task >> transform_task >> load_task >> dbt_task

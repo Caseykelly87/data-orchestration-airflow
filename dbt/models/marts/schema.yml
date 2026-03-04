@@ -1,0 +1,72 @@
+version: 2
+
+models:
+  - name: mart_gdp
+    description: >
+      GDP and consumption indicators from FRED.
+      Contains Real GDP (GDPC1), nominal and real Personal Consumption
+      Expenditures (PCEC, PCECC96), Retail Sales ex-Food (RSXFS), and the
+      Personal Saving Rate (PSAVERT). Materialized as a table for fast
+      time-series queries.
+    columns:
+      - name: observation_date
+        data_tests:
+          - not_null
+      - name: series_id
+        data_tests:
+          - not_null
+      - name: value
+        data_tests:
+          - not_null
+
+  - name: mart_inflation
+    description: >
+      Price and monetary policy indicators.
+      Contains headline CPI from FRED (CPIAUCSL) and Fed Funds Rate
+      (FEDFUNDS), plus BLS urban CPI (CUUR0000SA0), core CPI ex-food/energy
+      (CUUR0000SA0L1E), and average gasoline price (APU000074714).
+    columns:
+      - name: observation_date
+        data_tests:
+          - not_null
+      - name: series_id
+        data_tests:
+          - not_null
+      - name: value
+        data_tests:
+          - not_null
+
+  - name: mart_labor_market
+    description: >
+      Labor market and consumer sentiment indicators.
+      Contains Unemployment Rate (UNRATE), Average Hourly Earnings of
+      all employees (CES0500000003), Employment Cost Index wages/salaries
+      (CIU2020000000000I), and University of Michigan Consumer Sentiment
+      (UMCSENT).
+    columns:
+      - name: observation_date
+        data_tests:
+          - not_null
+      - name: series_id
+        data_tests:
+          - not_null
+      - name: value
+        data_tests:
+          - not_null
+
+  - name: mart_economic_summary
+    description: >
+      One row per series showing the most recent available observation.
+      Provides a single-table snapshot of the latest value for all 14
+      economic indicators — useful for dashboards and summary reports.
+    columns:
+      - name: series_id
+        data_tests:
+          - not_null
+          - unique
+      - name: latest_date
+        data_tests:
+          - not_null
+      - name: latest_value
+        data_tests:
+          - not_null

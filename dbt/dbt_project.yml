@@ -1,0 +1,61 @@
+# =============================================================================
+# dbt Project — economic_data
+# =============================================================================
+#
+# This dbt project runs inside the Airflow scheduler container after the
+# load_economic_data task completes. It reads from the raw tables written
+# by the economic-data-etl pipeline and produces analytics-ready views
+# and tables in the same postgres-etl database.
+#
+# Layer Architecture
+# ------------------
+#   Sources (raw, written by ETL):
+#     fact_economic_observations  — one row per (series_id, date)
+#     dim_series                  — one row per series_id
+#
+#   Staging (views — clean, typed, 1:1 with sources):
+#     stg_observations            — date cast to DATE, nulls filtered, renamed cols
+#     stg_dim_series              — clean passthrough
+#
+#   Marts (materialized tables — business-domain groupings):
+#     mart_gdp                    — GDP, PCE, retail sales, savings rate
+#     mart_inflation              — CPI, Fed Funds Rate, BLS price series
+#     mart_labor_market           — unemployment, wages, sentiment
+#     mart_economic_summary       — latest value for each of the 14 series
+#
+# Running Manually
+# ----------------
+#   docker exec airflow_scheduler bash -c \
+#     "cd /opt/airflow/dbt && dbt run --profiles-dir /opt/airflow/dbt"
+#
+#   docker exec airflow_scheduler bash -c \
+#     "cd /opt/airflow/dbt && dbt test --profiles-dir /opt/airflow/dbt"
+# =============================================================================
+
+name: economic_data
+version: "1.0.0"
+config-version: 2
+
+profile: economic_data
+
+model-paths: ["models"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  economic_data:
+    staging:
+      # Staging models are views — cheap to query, always up to date.
+      # They are the single authoritative source of typed, cleaned data.
+      +materialized: view
+
+    marts:
+      # Mart models are materialized as tables — faster for BI queries
+      # and dashboards that scan many rows.
+      +materialized: table

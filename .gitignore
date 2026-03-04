@@ -62,6 +62,15 @@ airflow.db
 docker-compose.override.yml
 
 # -----------------------------------------------------------------------------
+# dbt Artifacts
+# -----------------------------------------------------------------------------
+# Compiled SQL, run results, and downloaded packages are generated at runtime.
+# They are large, machine-specific, and must not be committed.
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+
+# -----------------------------------------------------------------------------
 # Testing and Coverage
 # -----------------------------------------------------------------------------
 .pytest_cache/

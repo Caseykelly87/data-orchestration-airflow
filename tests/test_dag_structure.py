@@ -352,17 +352,18 @@ class TestTaskExistence:
         "extract_economic_data",
         "transform_economic_data",
         "load_economic_data",
+        "dbt_transform",
     })
 
-    def test_dag_has_exactly_three_tasks(self, dag):
+    def test_dag_has_exactly_four_tasks(self, dag):
         """
-        DAG must define exactly three tasks.
+        DAG must define exactly four tasks.
 
-        The skeleton pipeline is extract → transform → load. No utility
-        tasks, sensors, or branches should be present in the initial commit.
+        The full pipeline is extract → transform → load → dbt_transform.
+        No utility tasks, sensors, or branches should be present.
         """
-        assert len(dag.tasks) == 3, (
-            f"Expected 3 tasks, found {len(dag.tasks)}: "
+        assert len(dag.tasks) == 4, (
+            f"Expected 4 tasks, found {len(dag.tasks)}: "
             f"{[t.task_id for t in dag.tasks]}"
         )
 
@@ -380,6 +381,11 @@ class TestTaskExistence:
         """load_economic_data task must be present."""
         task_ids = {task.task_id for task in dag.tasks}
         assert "load_economic_data" in task_ids
+
+    def test_dbt_task_exists(self, dag):
+        """dbt_transform task must be present — runs dbt models after load."""
+        task_ids = {task.task_id for task in dag.tasks}
+        assert "dbt_transform" in task_ids
 
     def test_exactly_expected_task_ids(self, dag):
         """
@@ -414,6 +420,9 @@ class TestTaskDependencies:
               │
               ▼
         load_economic_data
+              │
+              ▼
+        dbt_transform
 
     These tests inspect Airflow's task graph model (upstream_task_ids,
     downstream_task_ids) without triggering any execution. They are
@@ -475,17 +484,33 @@ class TestTaskDependencies:
             f"found: {load.upstream_task_ids}"
         )
 
-    def test_load_is_terminal_node(self, dag):
-        """
-        load_economic_data must have no downstream tasks.
-
-        It is the final stage of the pipeline. Any dangling downstream
-        dependency indicates an architecture error.
-        """
+    def test_load_downstream_is_dbt(self, dag):
+        """load must trigger dbt_transform as its immediate downstream task."""
         load = self._get_task(dag, "load_economic_data")
-        assert len(load.downstream_task_ids) == 0, (
-            f"load_economic_data must have no downstream tasks, "
+        assert "dbt_transform" in load.downstream_task_ids, (
+            f"load must list dbt_transform as downstream, "
             f"found: {load.downstream_task_ids}"
+        )
+
+    def test_dbt_upstream_is_load(self, dag):
+        """dbt_transform must declare load_economic_data as its upstream dependency."""
+        dbt = self._get_task(dag, "dbt_transform")
+        assert "load_economic_data" in dbt.upstream_task_ids, (
+            f"dbt_transform must list load as upstream, "
+            f"found: {dbt.upstream_task_ids}"
+        )
+
+    def test_dbt_is_terminal_node(self, dag):
+        """
+        dbt_transform must have no downstream tasks.
+
+        It is the final stage of the pipeline. SQL mart tables are the
+        end product — nothing should depend on them within this DAG.
+        """
+        dbt = self._get_task(dag, "dbt_transform")
+        assert len(dbt.downstream_task_ids) == 0, (
+            f"dbt_transform must have no downstream tasks, "
+            f"found: {dbt.downstream_task_ids}"
         )
 
     def test_full_dependency_chain(self, dag):
@@ -507,6 +532,11 @@ class TestTaskDependencies:
         assert "extract_economic_data" in transform.upstream_task_ids
         assert "load_economic_data" in transform.downstream_task_ids
 
-        # Load: one upstream (transform), no downstream
+        # Load: one upstream (transform), one downstream (dbt)
         assert "transform_economic_data" in load.upstream_task_ids
-        assert load.downstream_task_ids == set()
+        assert "dbt_transform" in load.downstream_task_ids
+
+        # dbt: one upstream (load), no downstream
+        dbt = self._get_task(dag, "dbt_transform")
+        assert "load_economic_data" in dbt.upstream_task_ids
+        assert dbt.downstream_task_ids == set()
