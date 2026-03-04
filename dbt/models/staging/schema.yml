@@ -1,0 +1,108 @@
+version: 2
+
+# =============================================================================
+# Source definitions
+# =============================================================================
+# These declare the raw tables written by the economic-data-etl pipeline.
+# dbt uses these to generate `{{ source(...) }}` references in staging models,
+# and to run data quality tests against the raw tables before transformation.
+# =============================================================================
+
+sources:
+  - name: economic_data
+    description: >
+      Raw economic time-series data loaded by the economic-data-etl pipeline.
+      Contains 14 series (9 FRED + 5 BLS) with daily/monthly observations.
+    database: "{{ env_var('POSTGRES_ETL_DB') }}"
+    schema: public
+
+    tables:
+      - name: fact_economic_observations
+        description: >
+          One row per (series_id, date). Stores all economic observations
+          from both FRED and BLS sources. Missing values are NULL (converted
+          from "." in FRED and "-" in BLS during ETL transform).
+        columns:
+          - name: series_id
+            description: Technical series identifier (e.g., UNRATE, CPIAUCSL).
+            data_tests:
+              - not_null
+          - name: series_name
+            description: Human-readable config name (e.g., UNRATE, CPI_ALL).
+            data_tests:
+              - not_null
+          - name: date
+            description: Observation date as TEXT in YYYY-MM-DD format.
+            data_tests:
+              - not_null
+          - name: value
+            description: Numeric observation value. NULL indicates missing data.
+          - name: source
+            description: Data source — either FRED or BLS.
+            data_tests:
+              - not_null
+              - accepted_values:
+                  values: ["FRED", "BLS"]
+
+      - name: dim_series
+        description: >
+          Dimension table with one row per economic series.
+          Contains stable metadata — rows are never updated after initial load.
+        columns:
+          - name: series_id
+            description: Technical series identifier — primary key.
+            data_tests:
+              - not_null
+              - unique
+          - name: series_name
+            description: Human-readable config name.
+            data_tests:
+              - not_null
+          - name: source
+            description: Data source — either FRED or BLS.
+            data_tests:
+              - not_null
+              - accepted_values:
+                  values: ["FRED", "BLS"]
+
+# =============================================================================
+# Staging model definitions
+# =============================================================================
+
+models:
+  - name: stg_observations
+    description: >
+      Cleaned view of fact_economic_observations. Date column is cast from
+      TEXT to DATE. Rows with NULL values are excluded — downstream mart
+      models operate on complete observations only.
+    columns:
+      - name: series_id
+        data_tests:
+          - not_null
+      - name: observation_date
+        description: Date cast from TEXT (YYYY-MM-DD) to DATE type.
+        data_tests:
+          - not_null
+      - name: value
+        description: Numeric observation value. Non-null by construction (nulls filtered in staging).
+        data_tests:
+          - not_null
+      - name: source
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ["FRED", "BLS"]
+
+  - name: stg_dim_series
+    description: >
+      Clean passthrough of dim_series with explicit column typing.
+    columns:
+      - name: series_id
+        data_tests:
+          - not_null
+          - unique
+      - name: source
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ["FRED", "BLS"]

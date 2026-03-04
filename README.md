@@ -30,10 +30,11 @@ This project orchestrates Project 1. It does **not** duplicate any ETL logic. Th
                         │  airflow-scheduler  (DAG execution)  │
                         │         │                            │
                         │         ▼                            │
-                        │  ┌─────────────────────────┐        │
-                        │  │    economic_data_pipeline│        │
-                        │  │  extract → transform → load      │
-                        │  └─────────────────────────┘        │
+                        │  ┌─────────────────────────────────┐  │
+                        │  │      economic_data_pipeline      │  │
+                        │  │  extract → transform → load      │  │
+                        │  │                    → dbt_transform│  │
+                        │  └─────────────────────────────────┘  │
                         │         │              │             │
                         │         ▼              ▼             │
                         │  postgres-airflow  postgres-etl      │
@@ -57,7 +58,7 @@ This project orchestrates Project 1. It does **not** duplicate any ETL logic. Th
 - [x] Airflow UI accessible at `http://localhost:8080`
 - [x] Both Postgres databases healthy
 - [x] DAG loads and displays in the UI
-- [x] All structural tests pass (35 tests)
+- [x] All structural tests pass (38 tests)
 - [x] ETL volume mounted at `/opt/airflow/etl/`
 - [x] Live FRED + BLS extract, transform, load wired end-to-end
 - [x] 5,817 FRED rows + 264 BLS rows confirmed in `postgres-etl`
@@ -316,7 +317,7 @@ tests/test_dag_structure.py::TestDagSchedule::test_dag_schedule_is_daily PASSED
 tests/test_dag_structure.py::TestDagSchedule::test_dag_catchup_is_disabled PASSED
 tests/test_dag_structure.py::TestDagSchedule::test_dag_max_active_runs PASSED
 tests/test_dag_structure.py::TestDefaultArgs::test_default_args_exist PASSED
-... (all 35 tests pass)
+... (all 38 tests pass)
 ```
 
 ---
@@ -400,11 +401,10 @@ data-orchestration-airflow/
 - 5 new structural tests covering alert config and SLA (35 total)
 
 ### Phase 4 — CI/CD and Cloud Readiness
-- [x] GitHub Actions CI workflow (ruff lint + 35 structural tests on every push/PR)
+- [x] GitHub Actions CI workflow (ruff lint + 38 structural tests on every push/PR)
 - [x] Production Docker Compose overlay (`docker-compose.prod.yml`) — port hardening, `AIRFLOW_ENV`, RDS migration path documented
+- [x] dbt integration — 4 mart tables + 2 staging views on `postgres-etl`, wired as `dbt_transform` task after load
 - [ ] Replace Docker Postgres with AWS RDS
-- [ ] Replace Docker Postgres with AWS RDS
-- [ ] dbt integration for transformation layer
 
 ---
 

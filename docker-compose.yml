@@ -111,6 +111,12 @@ x-airflow-common:
     ETL_DATABASE_URL: >-
       postgresql+psycopg2://${POSTGRES_ETL_USER}:${POSTGRES_ETL_PASSWORD}@postgres-etl:5432/${POSTGRES_ETL_DB}
 
+    # Individual ETL DB credentials — required by dbt's profiles.yml via env_var().
+    # ETL_DATABASE_URL is used by the Python ETL tasks; these three are used by dbt.
+    POSTGRES_ETL_USER: ${POSTGRES_ETL_USER}
+    POSTGRES_ETL_PASSWORD: ${POSTGRES_ETL_PASSWORD}
+    POSTGRES_ETL_DB: ${POSTGRES_ETL_DB}
+
     # API keys for FRED and BLS data sources.
     FRED_API_KEY: ${FRED_API_KEY}
     BLS_API_KEY: ${BLS_API_KEY}
@@ -131,6 +137,16 @@ x-airflow-common:
     # Alert recipient — passed to the DAG's default_args email list.
     AIRFLOW_ADMIN_EMAIL: ${AIRFLOW_ADMIN_EMAIL:-admin@example.com}
 
+    # -- dbt ------------------------------------------------------------------
+    # Install dbt-core and the dbt-postgres adapter at container startup.
+    # These are not included in the official Airflow image and are required
+    # by the dbt_transform task (BashOperator running `dbt run`).
+    #
+    # NOTE: The first `docker compose up` after adding this line will take
+    # 3-5 minutes longer while pip installs dbt and its dependencies.
+    # Subsequent restarts use the cached layer and start normally.
+    _PIP_ADDITIONAL_REQUIREMENTS: "dbt-core==1.8.7 dbt-postgres==1.8.2"
+
   volumes:
     # Bind mounts: changes on the host are immediately visible inside containers.
     # This enables live DAG development — edit a DAG file, the scheduler picks
@@ -141,6 +157,10 @@ x-airflow-common:
     - ./tests:/opt/airflow/tests
 
     - ../economic-data-etl:/opt/airflow/etl
+
+    # dbt project — bind-mounted so model edits on the host are available
+    # inside the container without a restart.
+    - ./dbt:/opt/airflow/dbt
 
   depends_on:
     &airflow-common-depends-on
