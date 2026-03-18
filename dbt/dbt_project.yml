@@ -54,8 +54,10 @@ models:
       # Staging models are views — cheap to query, always up to date.
       # They are the single authoritative source of typed, cleaned data.
       +materialized: view
+      +schema: staging
 
     marts:
       # Mart models are materialized as tables — faster for BI queries
       # and dashboards that scan many rows.
       +materialized: table
+      

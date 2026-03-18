@@ -134,6 +134,7 @@ def run_extract(**context: dict) -> dict:
     """
     import sys
     sys.path.insert(0, "/opt/airflow/etl")
+    sys.path.insert(0, "/opt/airflow/etl/src")
     from src.extract import fetch_fred_data, fetch_bls_data
     from src.config import FRED_SERIES, BLS_SERIES
 
@@ -159,6 +160,7 @@ def run_transform(**context: dict) -> dict:
     """
     import sys
     sys.path.insert(0, "/opt/airflow/etl")
+    sys.path.insert(0, "/opt/airflow/etl/src")
     from src.transform import (
         parse_fred_observations,
         parse_bls_batch,
@@ -193,6 +195,7 @@ def run_load(**context: dict) -> dict:
     import io
     import sys
     sys.path.insert(0, "/opt/airflow/etl")
+    sys.path.insert(0, "/opt/airflow/etl/src")
     import pandas as pd
     from sqlalchemy import create_engine
     from src.load import ensure_tables_exist, upsert_observations, upsert_dim_series
