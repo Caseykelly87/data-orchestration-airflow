@@ -107,15 +107,19 @@ x-airflow-common:
     # They are NOT used by Airflow itself — only by the task callables.
 
     # SQLAlchemy connection string for the ETL data database.
-    # The hostname `postgres-etl` resolves via Docker's internal DNS.
+    # Defaults to the Docker `postgres-etl` service; override POSTGRES_ETL_HOST
+    # in .env to point at an RDS instance without changing this file.
     ETL_DATABASE_URL: >-
-      postgresql+psycopg2://${POSTGRES_ETL_USER}:${POSTGRES_ETL_PASSWORD}@postgres-etl:5432/${POSTGRES_ETL_DB}
+      postgresql+psycopg2://${POSTGRES_ETL_USER}:${POSTGRES_ETL_PASSWORD}@${POSTGRES_ETL_HOST:-postgres-etl}:5432/${POSTGRES_ETL_DB}
 
     # Individual ETL DB credentials — required by dbt's profiles.yml via env_var().
-    # ETL_DATABASE_URL is used by the Python ETL tasks; these three are used by dbt.
+    # ETL_DATABASE_URL is used by the Python ETL tasks; these four are used by dbt.
     POSTGRES_ETL_USER: ${POSTGRES_ETL_USER}
     POSTGRES_ETL_PASSWORD: ${POSTGRES_ETL_PASSWORD}
     POSTGRES_ETL_DB: ${POSTGRES_ETL_DB}
+    # Hostname injected separately so dbt profiles.yml can reference it via env_var().
+    # Defaults to `postgres-etl` (Docker service) when not set in .env.
+    POSTGRES_ETL_HOST: ${POSTGRES_ETL_HOST:-postgres-etl}
 
     # API keys for FRED and BLS data sources.
     FRED_API_KEY: ${FRED_API_KEY}

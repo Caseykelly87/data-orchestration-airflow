@@ -10,9 +10,8 @@
 #   POSTGRES_ETL_USER      → database username
 #   POSTGRES_ETL_PASSWORD  → database password
 #   POSTGRES_ETL_DB        → database name
-#
-# The host `postgres-etl` resolves via Docker's internal DNS — the same
-# hostname used by the ETL load task.
+#   POSTGRES_ETL_HOST      → database hostname (default: postgres-etl Docker service;
+#                            set to RDS endpoint in .env for production)
 #
 # To run dbt manually inside the container:
 #   docker exec airflow_scheduler bash -c \
@@ -24,11 +23,11 @@ economic_data:
   outputs:
     dev:
       type: postgres
-      host: postgres-etl
+      host: "{{ env_var('POSTGRES_ETL_HOST', 'postgres-etl') }}"
       port: 5432
       user: "{{ env_var('POSTGRES_ETL_USER') }}"
       password: "{{ env_var('POSTGRES_ETL_PASSWORD') }}"
       dbname: "{{ env_var('POSTGRES_ETL_DB') }}"
-      schema: public
+      schema: anlytics
       threads: 1
       connect_timeout: 10

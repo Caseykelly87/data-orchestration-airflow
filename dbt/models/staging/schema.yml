@@ -14,7 +14,7 @@ sources:
       Raw economic time-series data loaded by the economic-data-etl pipeline.
       Contains 14 series (9 FRED + 5 BLS) with daily/monthly observations.
     database: "{{ env_var('POSTGRES_ETL_DB') }}"
-    schema: public
+    schema: raw
 
     tables:
       - name: fact_economic_observations
