@@ -60,4 +60,4 @@ models:
       # Mart models are materialized as tables — faster for BI queries
       # and dashboards that scan many rows.
       +materialized: table
-      
+      +schema: analytics

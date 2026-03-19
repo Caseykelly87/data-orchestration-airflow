@@ -27,7 +27,7 @@ What Is Tested
 - catchup is disabled to prevent backfill surprises on first deploy
 - default_args contain all required production fields (owner, retries,
   retry_delay, email_on_failure, email_on_retry)
-- All three pipeline tasks exist with the correct task IDs
+- All four pipeline tasks exist with the correct task IDs
 - Task dependency graph is correct: extract → transform → load
 
 What Is NOT Tested (and Why)
@@ -299,7 +299,7 @@ class TestDefaultArgs:
         )
 
     def test_email_on_failure_is_enabled(self, dag):
-        """email_on_failure must be True — SMTP is configured for Phase 3 alerting."""
+        """email_on_failure must be True — SMTP alerting is configured."""
         assert dag.default_args.get("email_on_failure") is True, (
             "email_on_failure must be True now that SMTP is configured"
         )
@@ -517,7 +517,7 @@ class TestTaskDependencies:
         """
         Comprehensive chain validation.
 
-        Verifies the exact topology: extract → transform → load.
+        Verifies the exact topology: extract → transform → load → dbt_transform.
         Catches any transitive dependency shortcuts or extra edges.
         """
         extract = self._get_task(dag, "extract_economic_data")
@@ -540,3 +540,73 @@ class TestTaskDependencies:
         dbt = self._get_task(dag, "dbt_transform")
         assert "load_economic_data" in dbt.upstream_task_ids
         assert dbt.downstream_task_ids == set()
+
+
+# ---------------------------------------------------------------------------
+# Task Operator Type Tests
+# ---------------------------------------------------------------------------
+
+class TestTaskOperatorTypes:
+    """
+    Validate that each task uses the correct Airflow operator type.
+
+    Operator type is part of the task contract:
+    - PythonOperator tasks receive Airflow context and push XCom.
+    - BashOperator tasks run shell commands in a subprocess.
+
+    Catching an accidental operator swap here prevents silent failures
+    where a task appears registered but behaves incorrectly at runtime.
+    """
+
+    def test_extract_is_python_operator(self, dag):
+        """extract_economic_data must be a PythonOperator — calls ETL extract functions."""
+        from airflow.operators.python import PythonOperator
+        task = dag.get_task("extract_economic_data")
+        assert isinstance(task, PythonOperator), (
+            f"extract_economic_data must be a PythonOperator, got {type(task).__name__}"
+        )
+
+    def test_transform_is_python_operator(self, dag):
+        """transform_economic_data must be a PythonOperator — calls ETL transform functions."""
+        from airflow.operators.python import PythonOperator
+        task = dag.get_task("transform_economic_data")
+        assert isinstance(task, PythonOperator), (
+            f"transform_economic_data must be a PythonOperator, got {type(task).__name__}"
+        )
+
+    def test_load_is_python_operator(self, dag):
+        """load_economic_data must be a PythonOperator — calls ETL load functions."""
+        from airflow.operators.python import PythonOperator
+        task = dag.get_task("load_economic_data")
+        assert isinstance(task, PythonOperator), (
+            f"load_economic_data must be a PythonOperator, got {type(task).__name__}"
+        )
+
+    def test_dbt_is_bash_operator(self, dag):
+        """dbt_transform must be a BashOperator — invokes dbt CLI as a subprocess."""
+        from airflow.operators.bash import BashOperator
+        task = dag.get_task("dbt_transform")
+        assert isinstance(task, BashOperator), (
+            f"dbt_transform must be a BashOperator, got {type(task).__name__}"
+        )
+
+    def test_dbt_command_runs_dbt(self, dag):
+        """dbt_transform bash_command must invoke 'dbt run'."""
+        task = dag.get_task("dbt_transform")
+        assert "dbt run" in task.bash_command, (
+            f"dbt_transform bash_command must contain 'dbt run', "
+            f"got: {repr(task.bash_command)}"
+        )
+
+    def test_dbt_command_specifies_profiles_dir(self, dag):
+        """
+        dbt_transform must pass --profiles-dir to dbt.
+
+        Without --profiles-dir, dbt looks in ~/.dbt/ which does not exist
+        inside the container. The profiles.yml is mounted at /opt/airflow/dbt.
+        """
+        task = dag.get_task("dbt_transform")
+        assert "--profiles-dir /opt/airflow/dbt" in task.bash_command, (
+            f"dbt_transform must pass '--profiles-dir /opt/airflow/dbt', "
+            f"got: {repr(task.bash_command)}"
+        )

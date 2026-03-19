@@ -9,9 +9,10 @@
 #   lint-and-test:
 #     1. Lint with ruff   — catches syntax errors, undefined names, unused
 #                           imports, and common style violations
-#     2. Structural tests — runs all 35 pytest tests that validate the DAG's
-#                           structure, scheduling config, and task graph
-#                           without requiring Docker or a live Airflow instance
+#     2. Structural tests — runs all 44 pytest tests that validate the DAG's
+#                           structure, scheduling config, task graph, and
+#                           operator types without requiring Docker or a live
+#                           Airflow instance
 #
 # Caching
 # -------

@@ -4,7 +4,7 @@
 
 **Project 2** of a modular data engineering portfolio.
 
-A production-grade ELT pipeline orchestrated by Apache Airflow. Extracts U.S. macroeconomic indicator data from FRED and BLS APIs, loads it into AWS RDS (PostgreSQL), and transforms it into analytics-ready mart tables using dbt. Fully containerized with Docker Compose, environment-driven configuration, and validated by a 38-test CI suite.
+A production-grade ELT pipeline orchestrated by Apache Airflow. Extracts U.S. macroeconomic indicator data from FRED and BLS APIs, loads it into AWS RDS (PostgreSQL), and transforms it into analytics-ready mart tables using dbt. Fully containerized with Docker Compose, environment-driven configuration, and validated by a 44-test CI suite.
 
 ---
 
@@ -93,7 +93,7 @@ docker exec airflow_scheduler bash -c "cd /opt/airflow/dbt && dbt test --profile
 - [x] Live FRED + BLS extract, transform, load confirmed end-to-end
 - [x] Gmail SMTP alerting — `email_on_failure=True`, alerts to `AIRFLOW_ADMIN_EMAIL`
 - [x] SLA of 2 hours on all tasks
-- [x] GitHub Actions CI — ruff lint + 38 structural tests on every push/PR
+- [x] GitHub Actions CI — ruff lint + 44 structural tests on every push/PR
 - [x] Production Docker Compose overlay (`docker-compose.prod.yml`)
 - [x] dbt ELT layer — 4 mart tables, 2 staging views, 32 data tests passing
 - [x] AWS RDS (PostgreSQL 17) — ETL data layer migrated from Docker to managed cloud DB
@@ -275,8 +275,8 @@ docker exec airflow_scheduler bash -c "cd /opt/airflow && python -m pytest tests
 ### Expected output
 
 ```
-... (38 tests)
-38 passed in Xs
+... (44 tests)
+44 passed in Xs
 ```
 
 ---
@@ -312,7 +312,7 @@ data-orchestration-airflow/
 │
 ├── tests/
 │   ├── __init__.py
-│   └── test_dag_structure.py          # 38 structural tests (TDD)
+│   └── test_dag_structure.py          # 44 structural tests (TDD)
 │
 ├── logs/                              # Airflow task logs (bind-mounted, git-ignored)
 ├── plugins/                           # Airflow custom plugins (currently empty)
@@ -368,7 +368,7 @@ data-orchestration-airflow/
 - Gmail SMTP alerting, SLA of 2 hours, 35 structural tests
 
 ### Phase 4 — CI/CD and Cloud Readiness ✅
-- [x] GitHub Actions CI (ruff + 38 structural tests on every push/PR)
+- [x] GitHub Actions CI (ruff + 44 structural tests on every push/PR)
 - [x] Production Docker Compose overlay (`docker-compose.prod.yml`)
 - [x] dbt ELT layer — 4 mart tables, 2 staging views, 32 data tests
 - [x] AWS RDS — ETL data layer migrated to managed cloud PostgreSQL
