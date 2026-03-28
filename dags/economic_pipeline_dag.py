@@ -128,13 +128,13 @@ default_args = {
 
 def run_extract(**context: dict) -> dict:
     """
-    Fetches all FRED and BLS series via the ETL extract module.
+    Fetches all FRED, BLS, and ERS series via the ETL extract module.
     Raw API responses are written to data/raw/ (idempotent — SHA-256
     skips unchanged series). Return value is pushed to XCom for transform.
     """
     import sys
     sys.path.insert(0, "/opt/airflow/etl")
-    from src.extract import fetch_fred_data, fetch_bls_data
+    from src.extract import fetch_fred_data, fetch_bls_data, fetch_ers_price_outlook
     from src.config import FRED_SERIES, BLS_SERIES
 
     end_year = int(context["ds"][:4])
@@ -147,8 +147,15 @@ def run_extract(**context: dict) -> dict:
     logger.info("Extracting BLS batch (2021-%d)", end_year)
     bls_data = fetch_bls_data(BLS_SERIES, 2021, end_year)
 
-    logger.info("Extract complete: %d FRED series, BLS batch fetched", len(fred_data))
-    return {"fred_data": fred_data, "bls_data": bls_data}
+    logger.info("Extracting ERS food price outlook")
+    try:
+        ers_data = fetch_ers_price_outlook()
+    except Exception as exc:
+        logger.warning("ERS extract failed, continuing without ERS data: %s", exc)
+        ers_data = None
+
+    logger.info("Extract complete: %d FRED series, BLS batch fetched, ERS fetched=%s", len(fred_data), ers_data is not None)
+    return {"fred_data": fred_data, "bls_data": bls_data, "ers_data": ers_data}
 
 
 def run_transform(**context: dict) -> dict:
@@ -162,14 +169,16 @@ def run_transform(**context: dict) -> dict:
     from src.transform import (
         parse_fred_observations,
         parse_bls_batch,
+        parse_ers_csv,
         build_dim_series,
         combine_fact_tables,
     )
-    from src.config import FRED_SERIES, BLS_SERIES
+    from src.config import FRED_SERIES, BLS_SERIES, ERS_SERIES, ERS_CATEGORY_MAP
 
     extract_result = context["ti"].xcom_pull(task_ids="extract_economic_data")
     fred_data = extract_result["fred_data"]
     bls_data  = extract_result["bls_data"]
+    ers_data  = extract_result.get("ers_data")
 
     fred_frames = [
         parse_fred_observations(fred_data[name], series_id, name)
@@ -177,8 +186,15 @@ def run_transform(**context: dict) -> dict:
         if fred_data.get(name) is not None
     ]
     bls_frame = parse_bls_batch(bls_data, BLS_SERIES)
-    fact_df   = combine_fact_tables(fred_frames, bls_frame)
-    dim_df    = build_dim_series(FRED_SERIES, BLS_SERIES)
+
+    extra_frames = []
+    if ers_data is not None:
+        ers_frame = parse_ers_csv(ers_data, ERS_CATEGORY_MAP, 2021)
+        if not ers_frame.empty:
+            extra_frames.append(ers_frame)
+
+    fact_df = combine_fact_tables(fred_frames, bls_frame, extra_frames=extra_frames or None)
+    dim_df  = build_dim_series(FRED_SERIES, BLS_SERIES, ers_series=ERS_SERIES)
 
     logger.info("Transform complete: %d fact rows, %d dim rows", len(fact_df), len(dim_df))
     return {"fact_df": fact_df.to_json(date_format="iso"), "dim_df": dim_df.to_json()}
@@ -253,17 +269,19 @@ with DAG(
         doc_md="""
 ## Extract
 
-Calls `fetch_fred_data()` and `fetch_bls_data()` from `economic-data-etl/src/extract.py`.
+Calls `fetch_fred_data()`, `fetch_bls_data()`, and `fetch_ers_price_outlook()` from `economic-data-etl/src/extract.py`.
 
 **Sources:**
-- **FRED API** — 9 macroeconomic series (GDP, CPI, Fed Funds Rate, etc.)
+- **FRED API** — 10 macroeconomic series (GDP, CPI, Fed Funds Rate, Missouri grocery sales, etc.)
 - **BLS API** — 5 labor and price series (wages, CPI urban, gas prices, etc.)
+- **USDA ERS** — 8 food price outlook categories (all food, meats, dairy, fruits/veg, etc.)
 
 **Idempotency:** SHA-256 hashing of API responses prevents redundant
 file writes. Re-running a failed extract is always safe.
 
 **Retry behavior:** Up to 3 retries with 5-minute delay, as set in
 `default_args`. Handles FRED 429/503 and BLS transient errors.
+ERS failures are non-fatal — pipeline continues without ERS data if the fetch fails.
         """,
     )
 
@@ -286,8 +304,9 @@ Calls the transform functions from `economic-data-etl/src/transform.py`.
 **Operations:**
 - `parse_fred_observations()` — FRED dict → typed DataFrame
 - `parse_bls_batch()` — BLS batch response → typed DataFrame
-- `combine_fact_tables()` — merge into long-format fact table
-- `build_dim_series()` — construct series dimension table
+- `parse_ers_csv()` — ERS food price CSV → typed DataFrame (skipped if ERS extract failed)
+- `combine_fact_tables()` — merge all sources into long-format fact table
+- `build_dim_series()` — construct series dimension table (FRED + BLS + ERS)
 
 **Missing value handling:** FRED encodes missing as `"."`, BLS as `"-"`.
 Both are normalized to `NaN` by the ETL transform layer.
@@ -353,10 +372,11 @@ completes. Creates analytics-ready views and tables from the raw loaded data.
 - `stg_dim_series` — clean passthrough of series dimension
 
 **Marts (materialized tables):**
-- `mart_gdp` — GDP, PCE, retail sales, personal savings rate
+- `mart_gdp` — GDP, PCE, retail sales (incl. Missouri grocery), personal savings rate
 - `mart_inflation` — CPI, Fed Funds Rate, BLS price series
 - `mart_labor_market` — unemployment, wages, employment cost index, sentiment
-- `mart_economic_summary` — latest value for each of the 14 economic series
+- `mart_grocery` — USDA ERS food price outlook (8 food categories)
+- `mart_economic_summary` — latest value for each of the 23 economic series
         """,
     )
 

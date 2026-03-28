@@ -12,7 +12,7 @@ sources:
   - name: economic_data
     description: >
       Raw economic time-series data loaded by the economic-data-etl pipeline.
-      Contains 14 series (9 FRED + 5 BLS) with daily/monthly observations.
+      Contains 23 series (10 FRED + 5 BLS + 8 ERS) with daily/monthly/annual observations.
     database: "{{ env_var('POSTGRES_ETL_DB') }}"
     schema: public
 
@@ -38,11 +38,11 @@ sources:
           - name: value
             description: Numeric observation value. NULL indicates missing data.
           - name: source
-            description: Data source — either FRED or BLS.
+            description: Data source — FRED, BLS, or ERS.
             data_tests:
               - not_null
               - accepted_values:
-                  values: ["FRED", "BLS"]
+                  values: ["FRED", "BLS", "ERS"]
 
       - name: dim_series
         description: >
@@ -59,11 +59,11 @@ sources:
             data_tests:
               - not_null
           - name: source
-            description: Data source — either FRED or BLS.
+            description: Data source — FRED, BLS, or ERS.
             data_tests:
               - not_null
               - accepted_values:
-                  values: ["FRED", "BLS"]
+                  values: ["FRED", "BLS", "ERS"]
 
 # =============================================================================
 # Staging model definitions
@@ -91,7 +91,7 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ["FRED", "BLS"]
+              values: ["FRED", "BLS", "ERS"]
 
   - name: stg_dim_series
     description: >
@@ -105,4 +105,4 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: ["FRED", "BLS"]
+              values: ["FRED", "BLS", "ERS"]

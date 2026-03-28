@@ -5,9 +5,9 @@ models:
     description: >
       GDP and consumption indicators from FRED.
       Contains Real GDP (GDPC1), nominal and real Personal Consumption
-      Expenditures (PCEC, PCECC96), Retail Sales ex-Food (RSXFS), and the
-      Personal Saving Rate (PSAVERT). Materialized as a table for fast
-      time-series queries.
+      Expenditures (PCEC, PCECC96), Retail Sales ex-Food (RSXFS), the
+      Personal Saving Rate (PSAVERT), and Missouri Grocery Store Retail
+      Sales (MSRSMO445). Materialized as a table for fast time-series queries.
     columns:
       - name: observation_date
         data_tests:
@@ -54,11 +54,30 @@ models:
         data_tests:
           - not_null
 
+  - name: mart_grocery
+    description: >
+      USDA ERS Food Price Outlook indicators.
+      Contains 8 food price categories sourced from the USDA Economic Research
+      Service: all food aggregate, food at home, food away from home, cereals,
+      meats/poultry/fish, dairy, fruits/vegetables, and nonalcoholic beverages.
+      Values represent annual percent-change forecasts. One row per category per year.
+    columns:
+      - name: observation_date
+        data_tests:
+          - not_null
+      - name: series_id
+        data_tests:
+          - not_null
+      - name: value
+        data_tests:
+          - not_null
+
   - name: mart_economic_summary
     description: >
       One row per series showing the most recent available observation.
-      Provides a single-table snapshot of the latest value for all 14
-      economic indicators — useful for dashboards and summary reports.
+      Provides a single-table snapshot of the latest value for all 23
+      economic indicators (10 FRED + 5 BLS + 8 ERS) — useful for
+      dashboards and summary reports.
     columns:
       - name: series_id
         data_tests:

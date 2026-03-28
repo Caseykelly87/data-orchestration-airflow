@@ -3,16 +3,16 @@
   ---------------------
   One row per series showing the most recent available observation.
 
-  Provides a 14-row snapshot of the current state of the U.S. economy
-  across all tracked indicators — suitable for dashboards, alerts, or
-  period-over-period comparison reports.
+  Provides a 23-row snapshot of the current state of the U.S. economy
+  across all tracked indicators (10 FRED + 5 BLS + 8 ERS) — suitable
+  for dashboards, alerts, or period-over-period comparison reports.
 
   Approach:
     1. Find the max (most recent) observation_date for each series.
     2. Join back to stg_observations to retrieve the corresponding value.
 
   Materialized as a table (configured in dbt_project.yml).
-  Sorted by source (FRED first, BLS second) then series_name.
+  Sorted by source (ERS, FRED, BLS) then series_name.
 */
 
 with latest_dates as (
