@@ -54,6 +54,31 @@ models:
         data_tests:
           - not_null
 
+  - name: mart_food_atlas
+    description: >
+      USDA Food Environment Atlas indicators for St. Louis County (FIPS 29189)
+      and St. Louis City (FIPS 29510). Long-format table with one row per
+      geography + indicator. Includes a human-readable `geography` label column.
+      Covers nine Atlas domains: stores, restaurants, access, food assistance,
+      food insecurity, taxes, local food, health, and socioeconomic factors.
+      Refreshed every 60 days by the food_atlas_pipeline DAG.
+    columns:
+      - name: fips
+        data_tests:
+          - not_null
+      - name: geography
+        data_tests:
+          - not_null
+      - name: indicator
+        data_tests:
+          - not_null
+      - name: value
+        data_tests:
+          - not_null
+      - name: downloaded_at
+        data_tests:
+          - not_null
+
   - name: mart_grocery
     description: >
       USDA ERS Food Price Outlook indicators.

@@ -65,6 +65,30 @@ sources:
               - accepted_values:
                   values: ["FRED", "BLS", "ERS"]
 
+      - name: fact_food_atlas
+        description: >
+          Long-format food environment indicator data for St. Louis from the
+          USDA Food Environment Atlas. One row per (fips, indicator) pair.
+          Covers FIPS 29189 (St. Louis County, MO) and 29510 (St. Louis City, MO).
+          Updated every 60 days by the food_atlas_pipeline DAG.
+        columns:
+          - name: fips
+            description: Five-digit FIPS county code.
+            data_tests:
+              - not_null
+              - accepted_values:
+                  values: ["29189", "29510"]
+          - name: indicator
+            description: USDA Atlas variable name (e.g. GROCPTH11, SNAPSPTH12).
+            data_tests:
+              - not_null
+          - name: value
+            description: Numeric indicator value. NULL rows filtered in staging.
+          - name: downloaded_at
+            description: Date the Atlas was last fetched as TEXT in YYYY-MM-DD format.
+            data_tests:
+              - not_null
+
 # =============================================================================
 # Staging model definitions
 # =============================================================================
@@ -106,3 +130,23 @@ models:
           - not_null
           - accepted_values:
               values: ["FRED", "BLS", "ERS"]
+
+  - name: stg_food_atlas
+    description: >
+      Cleaned view of fact_food_atlas. downloaded_at is cast from TEXT to DATE.
+      Rows with NULL values are excluded — downstream mart operates on complete
+      indicator observations only.
+    columns:
+      - name: fips
+        data_tests:
+          - not_null
+      - name: indicator
+        data_tests:
+          - not_null
+      - name: value
+        data_tests:
+          - not_null
+      - name: downloaded_at
+        description: Date cast from TEXT (YYYY-MM-DD) to DATE type.
+        data_tests:
+          - not_null
