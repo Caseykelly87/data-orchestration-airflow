@@ -189,7 +189,7 @@ def run_transform(**context: dict) -> dict:
 
     extra_frames = []
     if ers_data is not None:
-        ers_frame = parse_ers_csv(ers_data, ERS_CATEGORY_MAP, 2021)
+        ers_frame = parse_ers_csv(ers_data, ERS_CATEGORY_MAP, 2024)
         if not ers_frame.empty:
             extra_frames.append(ers_frame)
 
