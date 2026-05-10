@@ -325,31 +325,39 @@ Connection string sourced from `ETL_DATABASE_URL` environment variable.
     )
 
     # -----------------------------------------------------------------------
-    # Task 4: dbt Transform
+    # Task 4: Macro dbt Transform
     # -----------------------------------------------------------------------
-    # Runs dbt models after the load task has written raw data to postgres-etl.
-    # dbt creates analytics-ready mart tables (materialized) and staging views
-    # on top of the raw fact and dimension tables.
+    # Runs the macro-side dbt models after the load task has written raw data
+    # to postgres-etl. dbt creates analytics-ready mart tables (materialized)
+    # and staging views on top of the raw fact and dimension tables.
     #
     # The dbt project lives at /opt/airflow/dbt/ (bind-mounted from ./dbt/).
     # profiles.yml is co-located and uses env_var() for all credentials —
     # no secrets are hardcoded in the dbt project files.
     #
-    # Models produced:
+    # Models produced (macro side):
     #   views:  stg_observations, stg_dim_series
     #   tables: mart_gdp, mart_inflation, mart_labor_market, mart_economic_summary
+    #
+    # The grocery-side models are produced by `grocery_dbt_transform` on the
+    # parallel branch — selecting macro models explicitly here keeps each
+    # branch independent.
     # -----------------------------------------------------------------------
-    dbt_task = BashOperator(
-        task_id="dbt_transform",
+    macro_dbt_task = BashOperator(
+        task_id="macro_dbt_transform",
         bash_command=(
             "cd /opt/airflow/dbt && "
-            "dbt run --profiles-dir /opt/airflow/dbt"
+            "dbt run --profiles-dir /opt/airflow/dbt "
+            "--select staging.stg_observations staging.stg_dim_series marts.mart_gdp "
+            "marts.mart_inflation marts.mart_labor_market marts.mart_economic_summary"
         ),
         doc_md="""
-## dbt Transform
+## Macro dbt Transform
 
-Runs all dbt models against the ETL PostgreSQL database after `load_economic_data`
-completes. Creates analytics-ready views and tables from the raw loaded data.
+Runs the macro-side dbt models against the ETL PostgreSQL database after
+`load_economic_data` completes. Creates analytics-ready views and tables from
+the raw loaded data. The grocery-side dbt models are run by a separate task
+(`grocery_dbt_transform`) on the parallel branch.
 
 **Staging (views):**
 - `stg_observations` — raw fact table with date cast to DATE, null values filtered
@@ -378,9 +386,9 @@ completes. Creates analytics-ready views and tables from the raw loaded data.
     #   load_economic_data
     #          │
     #          ▼
-    #   dbt_transform
+    #   macro_dbt_transform
     #
     # The linear chain enforces sequential execution. A failure in any task
     # halts the downstream chain and triggers the retry policy in default_args.
     # -----------------------------------------------------------------------
-    extract_task >> transform_task >> load_task >> dbt_task
+    extract_task >> transform_task >> load_task >> macro_dbt_task
