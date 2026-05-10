@@ -9,19 +9,25 @@
 #
 # Layer Architecture
 # ------------------
-#   Sources (raw, written by ETL):
-#     fact_economic_observations  — one row per (series_id, date)
-#     dim_series                  — one row per series_id
+#   Macro branch
+#     Sources (raw, written by ETL):
+#       fact_economic_observations  — one row per (series_id, date)
+#       dim_series                  — one row per series_id
+#     Staging (views in `staging` schema):
+#       stg_observations
+#       stg_dim_series
+#     Marts (tables in `analytics` schema):
+#       mart_gdp, mart_inflation, mart_labor_market, mart_economic_summary
 #
-#   Staging (views — clean, typed, 1:1 with sources):
-#     stg_observations            — date cast to DATE, nulls filtered, renamed cols
-#     stg_dim_series              — clean passthrough
-#
-#   Marts (materialized tables — business-domain groupings):
-#     mart_gdp                    — GDP, PCE, retail sales, savings rate
-#     mart_inflation              — CPI, Fed Funds Rate, BLS price series
-#     mart_labor_market           — unemployment, wages, sentiment
-#     mart_economic_summary       — latest value for each of the 14 series
+#   Grocery branch
+#     Sources (raw, written by grocery_load_to_postgres):
+#       fact_store_metrics, fact_department_metrics, fact_anomaly_flags,
+#       dim_stores, dim_calendar, dim_departments
+#     Staging (views in `grocery_staging` schema):
+#       stg_store_metrics, stg_department_metrics, stg_anomaly_flags
+#     Marts (tables in `grocery_analytics` schema):
+#       mart_store_metrics, mart_anomalies, mart_dashboard_summary,
+#       mart_dim_stores, mart_dim_departments
 #
 # Running Manually
 # ----------------
@@ -61,3 +67,21 @@ models:
       # and dashboards that scan many rows.
       +materialized: table
       +schema: analytics
+
+    # -------------------------------------------------------------------------
+    # Grocery branch
+    # -------------------------------------------------------------------------
+    # Same view/table convention as the macro side, but lands in a separate
+    # pair of schemas (grocery_staging, grocery_analytics) so the data
+    # layer is self-documenting — a consumer reading the schema list can
+    # tell which platform branch a model belongs to without inspecting
+    # individual table names.
+    # -------------------------------------------------------------------------
+    grocery:
+      staging:
+        +materialized: view
+        +schema: grocery_staging
+
+      marts:
+        +materialized: table
+        +schema: grocery_analytics
