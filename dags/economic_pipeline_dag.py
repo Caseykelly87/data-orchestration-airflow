@@ -594,11 +594,14 @@ def run_portal_refresh(**context: dict) -> dict:
 with DAG(
     dag_id="economic_data_pipeline",
     description=(
-        "Daily orchestration of the U.S. macroeconomic indicator ETL pipeline. "
-        "Ingests 14 series from the FRED and BLS public APIs, normalizes data "
-        "to a tidy star schema, and upserts fact and dimension tables into "
-        "PostgreSQL. Orchestration only — all business logic lives in "
-        "the economic-data-etl module."
+        "Daily orchestration of the Knot Shore platform. Two parallel "
+        "branches converging on a portal-refresh signal: the macro branch "
+        "ingests 14 FRED/BLS economic indicators and materialises four "
+        "macro marts; the grocery branch invokes the sim engine, runs "
+        "the grocery ETL ingest and anomaly detection, loads six raw "
+        "tables, and materialises five grocery marts. Orchestration only "
+        "— all business logic lives in economic-data-etl and the sim "
+        "engine."
     ),
     default_args=default_args,
     schedule_interval="@daily",
@@ -609,7 +612,7 @@ with DAG(
     # must not run concurrently with itself to prevent data races.
     max_active_runs=1,
     # Tags for Airflow UI filtering. Use these to find this DAG quickly.
-    tags=["economic-data", "etl", "production", "postgres"],
+    tags=["knot-shore", "economic-data", "grocery", "etl", "production", "postgres"],
     # Enable the DAG-level doc panel in the Airflow UI.
     doc_md=__doc__,
 ) as dag:
@@ -743,23 +746,213 @@ the raw loaded data. The grocery-side dbt models are run by a separate task
     )
 
     # -----------------------------------------------------------------------
-    # Task Dependency Chain
+    # Task 5: Sim Engine Run
     # -----------------------------------------------------------------------
-    # Defines the execution order using Airflow's bitshift operator.
-    # This creates directed edges in the DAG's task graph:
-    #
-    #   extract_economic_data
-    #          │
-    #          ▼
-    #   transform_economic_data
-    #          │
-    #          ▼
-    #   load_economic_data
-    #          │
-    #          ▼
-    #   macro_dbt_transform
-    #
-    # The linear chain enforces sequential execution. A failure in any task
-    # halts the downstream chain and triggers the retry policy in default_args.
+    # First task on the grocery branch. Invokes the sim engine via subprocess
+    # to produce a fresh per-execution-date output tree at
+    # /opt/airflow/etl/data/sim_output/{{ ds }}/. Combines `init` (idempotent
+    # dimension/promo schedule generation) and `run` (8-date window
+    # generation) into one task so the DAG topology stays flat.
     # -----------------------------------------------------------------------
-    extract_task >> transform_task >> load_task >> macro_dbt_task
+    sim_engine_task = PythonOperator(
+        task_id="sim_engine_run",
+        python_callable=run_sim_engine,
+        doc_md="""
+## Sim Engine Run
+
+Invokes `python -m knot_shore init` followed by `python -m knot_shore run`
+inside the bind-mounted sim engine repo at `/opt/airflow/sim-engine`.
+
+**Outputs (under `/opt/airflow/etl/data/sim_output/{{ ds }}/`):**
+- `daily/{MM}/{DD}/{YYYY}/store_summary.csv`
+- `daily/{MM}/{DD}/{YYYY}/department_sales.csv`
+- `dimensions/dim_calendar.csv`
+- `dimensions/dim_departments.csv`
+- `dimensions/dim_stores.csv`
+
+**Window:** the sim engine generates 8 dates per call (anchor + 6 prior
+days + T-365). The orchestrator passes `{{ ds }}` as the anchor; the
+window's other dates come along by design.
+        """,
+    )
+
+    # -----------------------------------------------------------------------
+    # Task 6: Grocery ETL Ingest
+    # -----------------------------------------------------------------------
+    # Reads the sim engine's CSV output tree and writes the three canonical
+    # parquets — store-day metrics, department-day metrics, dim_stores —
+    # to the same per-execution-date directory.
+    # -----------------------------------------------------------------------
+    grocery_ingest_task = PythonOperator(
+        task_id="grocery_etl_ingest",
+        python_callable=run_grocery_ingest,
+        doc_md="""
+## Grocery ETL Ingest
+
+Calls `sim_cli.run`, `sim_cli.run_department_grain`,
+`sim_ingest.load_dim_stores`, and `sim_cli.write_dim_stores_parquet` from
+`economic-data-etl`. Calls the public functions directly — NOT
+`sim_cli.main()` — to avoid main()'s `configure_logging()` and
+`os.environ["LOG_LEVEL"] = "debug"` side effects.
+
+**Outputs (in the per-execution-date directory):**
+- `store_daily_metrics.parquet`
+- `department_daily_metrics.parquet`
+- `dim_stores.parquet`
+        """,
+    )
+
+    # -----------------------------------------------------------------------
+    # Task 7: Grocery ETL Detect
+    # -----------------------------------------------------------------------
+    # Evaluates the five anomaly-detection rules from
+    # `/opt/airflow/etl/config/detection_rules.yaml` against the store-day
+    # metrics parquet, writing `anomaly_flags.parquet` next to it.
+    # -----------------------------------------------------------------------
+    grocery_detect_task = PythonOperator(
+        task_id="grocery_etl_detect",
+        python_callable=run_grocery_detect,
+        doc_md="""
+## Grocery ETL Detect
+
+Calls `detect_cli.run` from `economic-data-etl`. Reads the metrics parquet
+written by `grocery_etl_ingest` and `dimensions/dim_stores.csv` written
+by the sim engine; writes `anomaly_flags.parquet` to the same directory.
+
+**Rules evaluated (per detection_rules.yaml):**
+- `revenue_band` — store-day net sales outside expected band
+- `labor_pct_band` — labor cost percent outside expected band
+- `avg_ticket_band` — average basket size outside expected band
+- `transactions_band` — transaction count outside expected band
+- `yoy_comp` — year-over-year comp deviation
+        """,
+    )
+
+    # -----------------------------------------------------------------------
+    # Task 8: Grocery Load to Postgres
+    # -----------------------------------------------------------------------
+    # Loads the five canonical artifacts (3 ETL parquets + 2 sim engine
+    # CSV dimensions) into the `raw` schema of postgres-etl. Validates row
+    # counts, column shape, and primary-key uniqueness inline before each
+    # to_sql write — assertions raise ValueError, which fails the task,
+    # which routes through the configured email alert.
+    # -----------------------------------------------------------------------
+    grocery_load_task = PythonOperator(
+        task_id="grocery_load_to_postgres",
+        python_callable=run_grocery_load,
+        doc_md="""
+## Grocery Load to Postgres
+
+Loads six raw tables into the `raw` schema (created if missing):
+
+| Table | Source | Format |
+|---|---|---|
+| `raw.fact_store_metrics` | `store_daily_metrics.parquet` | parquet (ETL) |
+| `raw.fact_department_metrics` | `department_daily_metrics.parquet` | parquet (ETL) |
+| `raw.fact_anomaly_flags` | `anomaly_flags.parquet` | parquet (detect_cli) |
+| `raw.dim_stores` | `dim_stores.parquet` | parquet (ETL) |
+| `raw.dim_calendar` | `dim_calendar.csv` | CSV (sim engine) |
+| `raw.dim_departments` | `dim_departments.csv` | CSV (sim engine) |
+
+**Validation gate:** row-count bounds (8 stores, 10 departments, 4-year
+calendar with leap-year tolerance), schema-shape assertions against
+`GROCERY_RAW_TABLE_COLUMNS`, and primary-key uniqueness for the three
+dimensions. A failed assertion fails the task, which sends the
+configured failure email.
+        """,
+    )
+
+    # -----------------------------------------------------------------------
+    # Task 9: Grocery dbt Transform
+    # -----------------------------------------------------------------------
+    # Runs the grocery-side dbt models against the ETL PostgreSQL database
+    # after `grocery_load_to_postgres` completes. The macro-side models are
+    # run independently by `macro_dbt_transform` on the parallel branch.
+    #
+    # Models produced (grocery side):
+    #   views:  stg_store_metrics, stg_department_metrics, stg_anomaly_flags
+    #   tables: mart_store_metrics, mart_anomalies, mart_dashboard_summary,
+    #           mart_dim_stores, mart_dim_departments
+    # -----------------------------------------------------------------------
+    grocery_dbt_task = BashOperator(
+        task_id="grocery_dbt_transform",
+        bash_command=(
+            "cd /opt/airflow/dbt && "
+            "dbt run --profiles-dir /opt/airflow/dbt --select grocery"
+        ),
+        doc_md="""
+## Grocery dbt Transform
+
+Runs the grocery-side dbt models — selected via `--select grocery` so
+the macro models are not re-run on this branch.
+
+**Staging (views):**
+- `stg_store_metrics` — typed view over `raw.fact_store_metrics`
+- `stg_department_metrics` — typed view over `raw.fact_department_metrics`
+- `stg_anomaly_flags` — typed view over `raw.fact_anomaly_flags`
+
+**Marts (materialized tables):**
+- `mart_store_metrics` — store-day metrics for the dashboard
+- `mart_anomalies` — anomaly firings sorted by date desc, severity, store
+- `mart_dashboard_summary` — KPI rollup, one row per date
+- `mart_dim_stores` — passthrough of `raw.dim_stores`
+- `mart_dim_departments` — passthrough of `raw.dim_departments`
+        """,
+    )
+
+    # -----------------------------------------------------------------------
+    # Task 10: Portal Refresh (Convergence)
+    # -----------------------------------------------------------------------
+    # The convergence point of the macro and grocery branches. Runs only
+    # when both `macro_dbt_transform` and `grocery_dbt_transform` succeed.
+    # Today it emits a structured log naming the marts whose downstream
+    # caches should be invalidated; future iterations will replace the log
+    # with HTTP cache-bust calls to economic-data-api.
+    # -----------------------------------------------------------------------
+    portal_refresh_task = PythonOperator(
+        task_id="portal_refresh",
+        python_callable=run_portal_refresh,
+        doc_md="""
+## Portal Refresh (Convergence)
+
+The macro and grocery branches converge here. Runs only when both
+`macro_dbt_transform` and `grocery_dbt_transform` succeed.
+
+**Today:** emits a structured log entry naming the macro and grocery
+marts whose downstream caches should be invalidated.
+
+**Future:** will replace the log with HTTP calls to `economic-data-api`
+to invalidate the parquet-bundle cache, so the portal sees fresh data
+within seconds of a successful DAG run.
+        """,
+    )
+
+    # -----------------------------------------------------------------------
+    # Task Dependency Graph
+    # -----------------------------------------------------------------------
+    # Two parallel branches converging on portal_refresh.
+    #
+    #   extract → transform → load → macro_dbt_transform ──┐
+    #                                                       │
+    #                                                       ▼
+    #                                                 portal_refresh
+    #                                                       ▲
+    #                                                       │
+    #   sim_engine_run → grocery_etl_ingest → grocery_etl_detect →
+    #     → grocery_load_to_postgres → grocery_dbt_transform ──┘
+    #
+    # Each branch is independent — a failure on the macro side does not
+    # block the grocery side or vice versa. portal_refresh runs only when
+    # both branches complete successfully; Airflow's default trigger rule
+    # (`all_success`) enforces this.
+    # -----------------------------------------------------------------------
+    extract_task >> transform_task >> load_task >> macro_dbt_task >> portal_refresh_task
+
+    (
+        sim_engine_task
+        >> grocery_ingest_task
+        >> grocery_detect_task
+        >> grocery_load_task
+        >> grocery_dbt_task
+        >> portal_refresh_task
+    )
