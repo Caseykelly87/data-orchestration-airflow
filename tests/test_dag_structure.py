@@ -629,3 +629,174 @@ class TestTaskOperatorTypes:
             f"macro_dbt_transform must pass '--profiles-dir /opt/airflow/dbt', "
             f"got: {repr(task.bash_command)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Grocery Branch Task Existence Tests
+# ---------------------------------------------------------------------------
+
+class TestGroceryTaskExistence:
+    """
+    Validate that all grocery-branch tasks are defined.
+
+    The grocery branch consists of five tasks executed in sequence:
+        sim_engine_run → grocery_etl_ingest → grocery_etl_detect →
+        grocery_load_to_postgres → grocery_dbt_transform.
+
+    Mirror of TestTaskExistence for the grocery side. Adding a separate
+    class keeps macro vs. grocery test organisation legible.
+    """
+
+    GROCERY_TASK_IDS = frozenset({
+        "sim_engine_run",
+        "grocery_etl_ingest",
+        "grocery_etl_detect",
+        "grocery_load_to_postgres",
+        "grocery_dbt_transform",
+    })
+
+    def test_sim_engine_task_exists(self, dag):
+        """sim_engine_run must be present — first task on the grocery branch."""
+        task_ids = {task.task_id for task in dag.tasks}
+        assert "sim_engine_run" in task_ids
+
+    def test_grocery_ingest_task_exists(self, dag):
+        """grocery_etl_ingest must be present — produces the three ETL parquets."""
+        task_ids = {task.task_id for task in dag.tasks}
+        assert "grocery_etl_ingest" in task_ids
+
+    def test_grocery_detect_task_exists(self, dag):
+        """grocery_etl_detect must be present — runs anomaly detection."""
+        task_ids = {task.task_id for task in dag.tasks}
+        assert "grocery_etl_detect" in task_ids
+
+    def test_grocery_load_task_exists(self, dag):
+        """grocery_load_to_postgres must be present — writes the six raw tables."""
+        task_ids = {task.task_id for task in dag.tasks}
+        assert "grocery_load_to_postgres" in task_ids
+
+    def test_grocery_dbt_task_exists(self, dag):
+        """grocery_dbt_transform must be present — runs the grocery dbt models."""
+        task_ids = {task.task_id for task in dag.tasks}
+        assert "grocery_dbt_transform" in task_ids
+
+    def test_all_grocery_tasks_present(self, dag):
+        """All five grocery tasks must be present as a complete set."""
+        task_ids = {task.task_id for task in dag.tasks}
+        missing = self.GROCERY_TASK_IDS - task_ids
+        assert not missing, f"Grocery tasks missing from DAG: {sorted(missing)}"
+
+
+# ---------------------------------------------------------------------------
+# Portal Refresh Task Tests
+# ---------------------------------------------------------------------------
+
+class TestPortalRefreshTask:
+    """
+    Validate that the portal_refresh convergence task is wired correctly.
+
+    portal_refresh is the only task that depends on both branches. Its
+    upstream set must be exactly {macro_dbt_transform, grocery_dbt_transform}
+    — adding extra upstreams would create unintended dependency edges, and
+    missing one would let portal_refresh run while the other branch was
+    still in flight.
+    """
+
+    def test_portal_refresh_exists(self, dag):
+        """portal_refresh must be present — it is the convergence task."""
+        task_ids = {task.task_id for task in dag.tasks}
+        assert "portal_refresh" in task_ids
+
+    def test_portal_refresh_has_two_upstreams(self, dag):
+        """
+        portal_refresh must have exactly two upstream tasks:
+        macro_dbt_transform and grocery_dbt_transform.
+        """
+        portal = dag.get_task("portal_refresh")
+        expected = {"macro_dbt_transform", "grocery_dbt_transform"}
+        assert portal.upstream_task_ids == expected, (
+            f"portal_refresh must have exactly {sorted(expected)} as upstreams, "
+            f"got: {sorted(portal.upstream_task_ids)}"
+        )
+
+    def test_portal_refresh_is_terminal(self, dag):
+        """portal_refresh must have no downstream tasks — it is the DAG's final node."""
+        portal = dag.get_task("portal_refresh")
+        assert portal.downstream_task_ids == set(), (
+            f"portal_refresh must be terminal, found downstream: "
+            f"{sorted(portal.downstream_task_ids)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Branch Convergence Tests
+# ---------------------------------------------------------------------------
+
+class TestBranchConvergence:
+    """
+    Validate the dual-branch topology converging on portal_refresh.
+
+    Two parallel branches:
+        macro:   extract → transform → load → macro_dbt_transform
+        grocery: sim_engine_run → grocery_etl_ingest → grocery_etl_detect →
+                 grocery_load_to_postgres → grocery_dbt_transform
+
+    Both feed exactly one common downstream — portal_refresh. No other
+    task in the DAG should list portal_refresh as a downstream.
+    """
+
+    def test_two_root_nodes(self, dag):
+        """
+        The DAG has exactly two root nodes (no upstream): extract and
+        sim_engine_run. A third root would mean a stray task escaped the
+        branch wiring.
+        """
+        roots = sorted(t.task_id for t in dag.tasks if not t.upstream_task_ids)
+        assert roots == ["extract_economic_data", "sim_engine_run"], (
+            f"Expected exactly two roots [extract_economic_data, sim_engine_run], "
+            f"got: {roots}"
+        )
+
+    def test_only_branch_terminals_feed_portal_refresh(self, dag):
+        """
+        Among all tasks, exactly two have portal_refresh as a downstream:
+        macro_dbt_transform and grocery_dbt_transform. Any other task
+        with portal_refresh downstream would be a wiring bug.
+        """
+        feeders = sorted(
+            t.task_id for t in dag.tasks
+            if "portal_refresh" in t.downstream_task_ids
+        )
+        assert feeders == ["grocery_dbt_transform", "macro_dbt_transform"], (
+            f"Only macro_dbt_transform and grocery_dbt_transform may feed "
+            f"portal_refresh, got: {feeders}"
+        )
+
+    def test_grocery_chain_full_topology(self, dag):
+        """
+        Comprehensive grocery-branch chain validation.
+
+        Verifies the exact topology of the grocery branch:
+            sim_engine_run → grocery_etl_ingest → grocery_etl_detect →
+            grocery_load_to_postgres → grocery_dbt_transform → portal_refresh.
+        """
+        sim = dag.get_task("sim_engine_run")
+        ingest = dag.get_task("grocery_etl_ingest")
+        detect = dag.get_task("grocery_etl_detect")
+        load = dag.get_task("grocery_load_to_postgres")
+        dbt = dag.get_task("grocery_dbt_transform")
+
+        assert sim.upstream_task_ids == set()
+        assert sim.downstream_task_ids == {"grocery_etl_ingest"}
+
+        assert ingest.upstream_task_ids == {"sim_engine_run"}
+        assert ingest.downstream_task_ids == {"grocery_etl_detect"}
+
+        assert detect.upstream_task_ids == {"grocery_etl_ingest"}
+        assert detect.downstream_task_ids == {"grocery_load_to_postgres"}
+
+        assert load.upstream_task_ids == {"grocery_etl_detect"}
+        assert load.downstream_task_ids == {"grocery_dbt_transform"}
+
+        assert dbt.upstream_task_ids == {"grocery_load_to_postgres"}
+        assert dbt.downstream_task_ids == {"portal_refresh"}
