@@ -1,0 +1,211 @@
+version: 2
+
+# =============================================================================
+# Grocery sources
+# =============================================================================
+# These declare the raw tables loaded into the `raw` schema by the
+# grocery_load_to_postgres task. dbt uses these to generate
+# `{{ source('grocery', ...) }}` references in the staging models and to
+# run data quality tests against the raw tables before transformation.
+#
+# Six tables are loaded by the grocery branch:
+#   facts:      fact_store_metrics, fact_department_metrics,
+#               fact_anomaly_flags
+#   dimensions: dim_stores, dim_calendar, dim_departments
+# =============================================================================
+
+sources:
+  - name: grocery
+    description: >
+      Raw grocery operational data — three fact tables produced by the
+      economic-data-etl grocery pipeline plus three dimension tables
+      produced directly by the sim engine.
+    database: "{{ env_var('POSTGRES_ETL_DB') }}"
+    schema: raw
+
+    tables:
+      - name: fact_store_metrics
+        description: >
+          One row per (store_id, date). Store-grain operational metrics
+          (sales, transactions, average basket, labor cost percent) emitted
+          by sim_cli.run from the sim engine's store_summary CSVs.
+        columns:
+          - name: date
+            data_tests:
+              - not_null
+          - name: store_id
+            data_tests:
+              - not_null
+          - name: total_sales
+            data_tests:
+              - not_null
+          - name: transaction_count
+            data_tests:
+              - not_null
+          - name: avg_basket_size
+            data_tests:
+              - not_null
+          - name: labor_cost_pct
+            description: Labor cost as a fraction of net sales. Nullable when source cell is empty.
+
+      - name: fact_department_metrics
+        description: >
+          One row per (store_id, department_id, date). Department-grain
+          operational metrics emitted by sim_cli.run_department_grain.
+        columns:
+          - name: date
+            data_tests:
+              - not_null
+          - name: store_id
+            data_tests:
+              - not_null
+          - name: department_id
+            data_tests:
+              - not_null
+          - name: net_sales
+            data_tests:
+              - not_null
+          - name: transactions
+            data_tests:
+              - not_null
+          - name: units_sold
+            data_tests:
+              - not_null
+          - name: gross_margin_pct
+            data_tests:
+              - not_null
+
+      - name: fact_anomaly_flags
+        description: >
+          One row per fired detection rule. Produced by detect_cli.run
+          evaluating the rules in detection_rules.yaml against the
+          store-grain metrics.
+        columns:
+          - name: date
+            data_tests:
+              - not_null
+          - name: store_id
+            data_tests:
+              - not_null
+          - name: rule_id
+            data_tests:
+              - not_null
+              - accepted_values:
+                  values:
+                    - revenue_band
+                    - labor_pct_band
+                    - avg_ticket_band
+                    - transactions_band
+                    - yoy_comp
+          - name: severity_level
+            data_tests:
+              - not_null
+              - accepted_values:
+                  values: ["info", "warning", "critical"]
+
+      - name: dim_stores
+        description: >
+          One row per store. Stable metadata produced by the sim engine's
+          dimensions module; canonicalised by sim_cli.write_dim_stores_parquet.
+        columns:
+          - name: store_id
+            data_tests:
+              - not_null
+              - unique
+          - name: store_name
+            data_tests:
+              - not_null
+          - name: trade_area_profile
+            data_tests:
+              - not_null
+              - accepted_values:
+                  values: ["suburban-family", "urban-dense", "value-market"]
+
+      - name: dim_departments
+        description: >
+          One row per department. Sim engine output, loaded directly to
+          the raw schema without an ETL transform pass.
+        columns:
+          - name: department_id
+            data_tests:
+              - not_null
+              - unique
+          - name: department_name
+            data_tests:
+              - not_null
+          - name: is_perishable
+            data_tests:
+              - not_null
+
+      - name: dim_calendar
+        description: >
+          One row per date over the four-year horizon. Sim engine output;
+          loaded directly to the raw schema.
+        columns:
+          - name: date_key
+            data_tests:
+              - not_null
+              - unique
+
+
+# =============================================================================
+# Grocery staging model definitions
+# =============================================================================
+
+models:
+  - name: stg_store_metrics
+    description: >
+      Cleaned view of fact_store_metrics. Date cast to SQL DATE and
+      renamed to metric_date.
+    columns:
+      - name: metric_date
+        data_tests:
+          - not_null
+      - name: store_id
+        data_tests:
+          - not_null
+      - name: total_sales
+        data_tests:
+          - not_null
+
+  - name: stg_department_metrics
+    description: >
+      Cleaned view of fact_department_metrics with metric_date typed
+      as DATE.
+    columns:
+      - name: metric_date
+        data_tests:
+          - not_null
+      - name: store_id
+        data_tests:
+          - not_null
+      - name: department_id
+        data_tests:
+          - not_null
+
+  - name: stg_anomaly_flags
+    description: >
+      Cleaned view of fact_anomaly_flags. Flag date typed as DATE and
+      renamed to flag_date.
+    columns:
+      - name: flag_date
+        data_tests:
+          - not_null
+      - name: store_id
+        data_tests:
+          - not_null
+      - name: rule_id
+        data_tests:
+          - not_null
+          - accepted_values:
+              values:
+                - revenue_band
+                - labor_pct_band
+                - avg_ticket_band
+                - transactions_band
+                - yoy_comp
+      - name: severity_level
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ["info", "warning", "critical"]
