@@ -214,6 +214,377 @@ def run_load(**context: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Grocery Branch Constants
+# ---------------------------------------------------------------------------
+# The grocery branch shares one per-execution-date directory across all four
+# downstream tasks (sim engine, ingest, detect, load). Centralising the path
+# pattern here avoids drift between callables.
+#
+# Directory shape (created on the bind-mounted economic-data-etl volume):
+#
+#   /opt/airflow/etl/data/sim_output/{{ ds }}/
+#   ├── daily/{MM}/{DD}/{YYYY}/
+#   │   ├── store_summary.csv          (sim engine)
+#   │   └── department_sales.csv       (sim engine)
+#   ├── dimensions/
+#   │   ├── dim_calendar.csv           (sim engine)
+#   │   ├── dim_departments.csv        (sim engine)
+#   │   └── dim_stores.csv             (sim engine)
+#   ├── store_daily_metrics.parquet    (grocery_etl_ingest)
+#   ├── department_daily_metrics.parquet (grocery_etl_ingest)
+#   ├── dim_stores.parquet             (grocery_etl_ingest)
+#   └── anomaly_flags.parquet          (grocery_etl_detect)
+#
+# This tree is intentionally not deleted between tasks within a DAG run —
+# detection reads dim_stores from the same tree the sim engine wrote.
+# ---------------------------------------------------------------------------
+SIM_ENGINE_REPO_PATH = "/opt/airflow/sim-engine"
+SIM_OUTPUT_BASE = "/opt/airflow/etl/data/sim_output"
+DETECTION_RULES_PATH = "/opt/airflow/etl/config/detection_rules.yaml"
+
+
+def _sim_output_dir(ds: str) -> str:
+    """Return the per-execution-date sim output directory for the given ds."""
+    return f"{SIM_OUTPUT_BASE}/{ds}"
+
+
+# ---------------------------------------------------------------------------
+# Grocery Branch Task Callables
+# ---------------------------------------------------------------------------
+# These follow the same pattern as the macro callables: thin wrappers, lazy
+# imports inside the function, structured logging, and a return value that
+# Airflow pushes to XCom for downstream tasks. Each callable's docstring
+# describes the contract it satisfies.
+# ---------------------------------------------------------------------------
+
+def run_sim_engine(**context: dict) -> dict:
+    """
+    Invokes the sim engine via subprocess to produce a fresh per-execution-date
+    output tree. Runs `python -m knot_shore init` (idempotent dimension/promo
+    schedule generation) followed by `python -m knot_shore run --date {{ ds }}`,
+    which generates 8 dates of store-day data per call (anchor + 6 prior + T-365).
+
+    The 8-date window is intrinsic to the sim engine's design — the orchestrator
+    accepts the window and uses {{ ds }} as the anchor; downstream tasks operate
+    on the entire tree.
+    """
+    import subprocess
+
+    ds = context["ds"]
+    output_dir = _sim_output_dir(ds)
+
+    logger.info("sim_engine: ensuring init artifacts at %s", output_dir)
+    init_result = subprocess.run(
+        ["python", "-m", "knot_shore", "init", "--output", output_dir],
+        cwd=SIM_ENGINE_REPO_PATH,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if init_result.returncode != 0:
+        logger.error("sim_engine init failed: %s", init_result.stderr)
+        raise RuntimeError(
+            f"sim_engine init exited with code {init_result.returncode}. "
+            f"stderr: {init_result.stderr}"
+        )
+    logger.info("sim_engine: init complete")
+
+    logger.info("sim_engine: generating data for anchor date %s", ds)
+    run_result = subprocess.run(
+        ["python", "-m", "knot_shore", "run", "--date", ds, "--output", output_dir],
+        cwd=SIM_ENGINE_REPO_PATH,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if run_result.returncode != 0:
+        logger.error("sim_engine run failed: %s", run_result.stderr)
+        raise RuntimeError(
+            f"sim_engine run exited with code {run_result.returncode}. "
+            f"stderr: {run_result.stderr}"
+        )
+    logger.info("sim_engine: run complete for anchor %s", ds)
+    return {"sim_output_root": output_dir, "anchor_date": ds}
+
+
+def run_grocery_ingest(**context: dict) -> dict:
+    """
+    Reads the sim engine's CSV output tree and writes the three canonical
+    parquet artifacts (store-day metrics, department-day metrics, dim_stores)
+    via economic-data-etl/src/sim_cli.
+
+    Calls the public functions directly (run, run_department_grain,
+    load_dim_stores, write_dim_stores_parquet) — NOT main() — to avoid
+    main()'s side effects (configure_logging() and an os.environ mutation).
+    """
+    import sys
+    sys.path.insert(0, "/opt/airflow/etl")
+    sys.path.insert(0, "/opt/airflow/etl/src")
+    from pathlib import Path
+    from src.sim_cli import (
+        run as sim_cli_run,
+        run_department_grain,
+        write_dim_stores_parquet,
+    )
+    from src.sim_ingest import load_dim_stores
+
+    ds = context["ds"]
+    sim_output_root = Path(_sim_output_dir(ds))
+
+    logger.info("grocery_ingest: building store-day metrics from %s", sim_output_root)
+    store_metrics_path = sim_cli_run(sim_output_root, sim_output_root)
+
+    logger.info("grocery_ingest: building department-day metrics")
+    dept_metrics_path = run_department_grain(sim_output_root, sim_output_root)
+
+    logger.info("grocery_ingest: writing dim_stores.parquet")
+    dim_stores_df = load_dim_stores(sim_output_root)
+    dim_stores_path = write_dim_stores_parquet(dim_stores_df, sim_output_root)
+
+    paths = {
+        "store_metrics": str(store_metrics_path),
+        "department_metrics": str(dept_metrics_path),
+        "dim_stores_parquet": str(dim_stores_path),
+        "sim_output_root": str(sim_output_root),
+    }
+    logger.info("grocery_ingest complete: %s", paths)
+    return paths
+
+
+def run_grocery_detect(**context: dict) -> dict:
+    """
+    Evaluates the five anomaly-detection rules from
+    `economic-data-etl/config/detection_rules.yaml` against the store-day
+    metrics parquet, writing `anomaly_flags.parquet` to the same per-execution
+    -date directory.
+
+    Calls `detect_cli.run` directly — not `main()` — to avoid logging
+    reconfiguration and os.environ mutation inside a managed worker process.
+    """
+    import sys
+    sys.path.insert(0, "/opt/airflow/etl")
+    sys.path.insert(0, "/opt/airflow/etl/src")
+    from pathlib import Path
+    from src.detect_cli import run as detect_cli_run
+
+    ingest_result = context["ti"].xcom_pull(task_ids="grocery_etl_ingest")
+    sim_output_root = Path(ingest_result["sim_output_root"])
+    metrics_path = Path(ingest_result["store_metrics"])
+
+    logger.info("grocery_detect: running rules from %s", DETECTION_RULES_PATH)
+    output_path = detect_cli_run(
+        metrics_path=metrics_path,
+        sim_output_root=sim_output_root,
+        rules_path=Path(DETECTION_RULES_PATH),
+        output_dir=sim_output_root,
+    )
+    logger.info("grocery_detect complete: %s", output_path)
+    return {"anomaly_flags_parquet": str(output_path)}
+
+
+# Expected column sets for the five raw tables. Asserted before each
+# to_sql write so a schema drift in either the sim engine or the ETL fails
+# loudly with a precise diagnostic instead of a downstream dbt error.
+GROCERY_RAW_TABLE_COLUMNS = {
+    "fact_store_metrics": {
+        "date", "store_id", "total_sales", "transaction_count",
+        "avg_basket_size", "labor_cost_pct",
+    },
+    "fact_department_metrics": {
+        "date", "store_id", "department_id", "net_sales", "transactions",
+        "units_sold", "gross_margin_pct",
+    },
+    "fact_anomaly_flags": {
+        "date", "store_id", "rule_id", "actual_value", "expected_low",
+        "expected_high", "distance_from_band", "severity_score", "severity_level",
+    },
+    "dim_stores": {
+        "store_id", "store_name", "address", "city", "zip", "county_fips",
+        "trade_area_profile", "sqft", "open_date", "base_daily_revenue",
+    },
+    "dim_calendar": {
+        "date_key", "day_of_week", "day_of_week_num", "is_weekend",
+        "is_holiday", "holiday_name", "is_snap_window", "fiscal_week",
+        "fiscal_period", "month", "quarter", "year",
+    },
+    "dim_departments": {
+        "department_id", "department_name", "is_perishable",
+        "seasonal_profile", "base_margin_pct",
+    },
+}
+
+
+def _ensure_raw_schema_exists(engine) -> None:
+    """Create the raw schema if it does not exist. Idempotent."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        conn.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
+        conn.commit()
+
+
+def _assert_columns(table_name: str, df) -> None:
+    """Raise ValueError if df's columns do not match the expected set exactly."""
+    expected = GROCERY_RAW_TABLE_COLUMNS[table_name]
+    actual = set(df.columns)
+    missing = expected - actual
+    extra = actual - expected
+    if missing or extra:
+        raise ValueError(
+            f"{table_name} schema mismatch.\n"
+            f"  Missing columns: {sorted(missing)}\n"
+            f"  Unexpected columns: {sorted(extra)}\n"
+            f"  Expected: {sorted(expected)}\n"
+            f"  Actual:   {sorted(actual)}"
+        )
+
+
+def run_grocery_load(**context: dict) -> dict:
+    """
+    Loads the five canonical grocery artifacts (3 ETL parquets + 2 sim engine
+    CSV dimensions) into the `raw` schema of the ETL postgres database.
+
+    Validation runs before each `to_sql` write:
+      - Row-count bounds appropriate for an 8-store / 10-department / ~8-date
+        DAG run.
+      - Schema-shape assertion against the column set declared in
+        GROCERY_RAW_TABLE_COLUMNS.
+      - Primary-key uniqueness for the three dimensions.
+
+    A failed assertion fails the task, which fails the DAG run, which routes
+    through the configured email alert in default_args. This is the platform's
+    data-quality checkpoint at the load boundary — a separate ETL transform
+    pass would just duplicate the sim engine's existing schema work.
+    """
+    import sys
+    sys.path.insert(0, "/opt/airflow/etl")
+    sys.path.insert(0, "/opt/airflow/etl/src")
+    from pathlib import Path
+    import pandas as pd
+    from sqlalchemy import create_engine
+
+    ingest_result = context["ti"].xcom_pull(task_ids="grocery_etl_ingest")
+    detect_result = context["ti"].xcom_pull(task_ids="grocery_etl_detect")
+    sim_output_root = Path(ingest_result["sim_output_root"])
+
+    store_metrics_df = pd.read_parquet(ingest_result["store_metrics"])
+    dept_metrics_df = pd.read_parquet(ingest_result["department_metrics"])
+    anomaly_flags_df = pd.read_parquet(detect_result["anomaly_flags_parquet"])
+    dim_stores_df = pd.read_parquet(ingest_result["dim_stores_parquet"])
+    dim_calendar_df = pd.read_csv(sim_output_root / "dimensions" / "dim_calendar.csv")
+    dim_departments_df = pd.read_csv(sim_output_root / "dimensions" / "dim_departments.csv")
+
+    # Row-count bounds. Lower bounds catch silent empty inputs; upper bounds
+    # catch a sim engine that ran for an unexpected window (e.g., a multi-week
+    # backfill into a per-DAG-run directory).
+    if not (1 <= len(store_metrics_df) <= 80):
+        raise ValueError(
+            f"fact_store_metrics row count is {len(store_metrics_df)}, "
+            f"expected 1..80 (8 stores x ~8 dates plus buffer)."
+        )
+    if not (1 <= len(dept_metrics_df) <= 800):
+        raise ValueError(
+            f"fact_department_metrics row count is {len(dept_metrics_df)}, "
+            f"expected 1..800 (8 stores x 10 departments x ~8 dates plus buffer)."
+        )
+    if not (0 <= len(anomaly_flags_df) <= 200):
+        raise ValueError(
+            f"fact_anomaly_flags row count is {len(anomaly_flags_df)}, "
+            f"expected 0..200 (zero is valid: clean run with no firings)."
+        )
+    if len(dim_stores_df) != 8:
+        raise ValueError(
+            f"dim_stores row count is {len(dim_stores_df)}, expected exactly 8. "
+            "The sim engine should produce 8 stores. "
+            "Check seed_data/store_locations.json in the sim engine repo."
+        )
+    if not (1460 <= len(dim_calendar_df) <= 1462):
+        raise ValueError(
+            f"dim_calendar row count is {len(dim_calendar_df)}, expected 1460..1462 "
+            "(four years with leap-year tolerance)."
+        )
+    if len(dim_departments_df) != 10:
+        raise ValueError(
+            f"dim_departments row count is {len(dim_departments_df)}, expected exactly 10. "
+            "Check the sim engine's dimensions module."
+        )
+
+    # Schema-shape assertions
+    _assert_columns("fact_store_metrics", store_metrics_df)
+    _assert_columns("fact_department_metrics", dept_metrics_df)
+    _assert_columns("fact_anomaly_flags", anomaly_flags_df)
+    _assert_columns("dim_stores", dim_stores_df)
+    _assert_columns("dim_calendar", dim_calendar_df)
+    _assert_columns("dim_departments", dim_departments_df)
+
+    # Primary-key uniqueness for dimensions. A duplicate would indicate
+    # corruption upstream and would silently produce fan-out joins in dbt.
+    if not dim_stores_df["store_id"].is_unique:
+        raise ValueError("dim_stores.store_id must be unique; found duplicates.")
+    if not dim_departments_df["department_id"].is_unique:
+        raise ValueError(
+            "dim_departments.department_id must be unique; found duplicates."
+        )
+    if not dim_calendar_df["date_key"].is_unique:
+        raise ValueError("dim_calendar.date_key must be unique; found duplicates.")
+
+    engine = create_engine(os.environ["ETL_DATABASE_URL"], future=True)
+    _ensure_raw_schema_exists(engine)
+
+    table_to_df = {
+        "fact_store_metrics": store_metrics_df,
+        "fact_department_metrics": dept_metrics_df,
+        "fact_anomaly_flags": anomaly_flags_df,
+        "dim_stores": dim_stores_df,
+        "dim_calendar": dim_calendar_df,
+        "dim_departments": dim_departments_df,
+    }
+    row_counts: dict[str, int] = {}
+    for table_name, df in table_to_df.items():
+        df.to_sql(
+            name=table_name,
+            con=engine,
+            schema="raw",
+            if_exists="replace",
+            index=False,
+        )
+        row_counts[table_name] = len(df)
+        logger.info("grocery_load: wrote raw.%s (%d rows)", table_name, len(df))
+
+    logger.info("grocery_load complete: %s", row_counts)
+    return row_counts
+
+
+def run_portal_refresh(**context: dict) -> dict:
+    """
+    Convergence task. Emits a structured log entry naming the macro and
+    grocery marts whose downstream caches should be invalidated. This is a
+    placeholder for actual cache-invalidation HTTP calls to economic-data-api
+    in a future iteration; today it only signals that both branches succeeded.
+    """
+    logger.info(
+        "portal_refresh signal",
+        extra={
+            "event": "portal_cache_invalidate",
+            "macro_marts": [
+                "mart_gdp",
+                "mart_inflation",
+                "mart_labor_market",
+                "mart_economic_summary",
+            ],
+            "grocery_marts": [
+                "mart_store_metrics",
+                "mart_anomalies",
+                "mart_dashboard_summary",
+                "mart_dim_stores",
+                "mart_dim_departments",
+            ],
+            "execution_date": context["ds"],
+        },
+    )
+    return {"refreshed_at": context["ds"]}
+
+
+# ---------------------------------------------------------------------------
 # DAG Definition
 # ---------------------------------------------------------------------------
 # The `with DAG(...)` context manager registers all operators defined
