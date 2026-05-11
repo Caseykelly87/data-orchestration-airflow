@@ -162,6 +162,14 @@ x-airflow-common:
 
     - ../economic-data-etl:/opt/airflow/etl
 
+    # Sim engine repo — bind-mounted so the DAG's grocery branch can invoke
+    # `python -m knot_shore` from inside the scheduler container. The path
+    # is parameterized via SIM_ENGINE_PATH so each developer can point to
+    # a non-sibling local checkout (the repo is not always laid out beside
+    # data-orchestration-airflow). The default works for the standard
+    # sibling-repo layout.
+    - ${SIM_ENGINE_PATH:-../knot-shore-grocery-simulation-engine}:/opt/airflow/sim-engine
+
     # dbt project — bind-mounted so model edits on the host are available
     # inside the container without a restart.
     - ./dbt:/opt/airflow/dbt

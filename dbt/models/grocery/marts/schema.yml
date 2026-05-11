@@ -1,0 +1,104 @@
+version: 2
+
+models:
+  - name: mart_store_metrics
+    description: >
+      Store-day operational metrics passed through from
+      stg_store_metrics. Materialised as a table; sorted by
+      (metric_date, store_id) for fast date-range scans.
+    columns:
+      - name: metric_date
+        data_tests:
+          - not_null
+      - name: store_id
+        data_tests:
+          - not_null
+      - name: total_sales
+        data_tests:
+          - not_null
+      - name: transaction_count
+        data_tests:
+          - not_null
+
+  - name: mart_anomalies
+    description: >
+      Anomaly firings sorted for the operations dashboard's default
+      view (most recent first, then severity, then store).
+    columns:
+      - name: flag_date
+        data_tests:
+          - not_null
+      - name: store_id
+        data_tests:
+          - not_null
+      - name: rule_id
+        data_tests:
+          - not_null
+          - accepted_values:
+              values:
+                - revenue_band
+                - labor_pct_band
+                - avg_ticket_band
+                - transactions_band
+                - yoy_comp
+      - name: severity_level
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ["info", "warning", "critical"]
+
+  - name: mart_dashboard_summary
+    description: >
+      Daily KPI rollup. One row per date with summed sales and
+      transactions across all stores, the mean labor cost percent,
+      and the count of anomaly firings on that date (zero when none
+      fired).
+    columns:
+      - name: metric_date
+        data_tests:
+          - not_null
+          - unique
+      - name: total_net_sales
+        data_tests:
+          - not_null
+      - name: total_transactions
+        data_tests:
+          - not_null
+      - name: anomaly_count
+        data_tests:
+          - not_null
+
+  - name: mart_dim_stores
+    description: >
+      Materialised passthrough of dim_stores with an explicit column
+      list. The mart-layer contract for store metadata exposed to the
+      API and portal.
+    columns:
+      - name: store_id
+        data_tests:
+          - not_null
+          - unique
+      - name: store_name
+        data_tests:
+          - not_null
+      - name: trade_area_profile
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ["suburban-family", "urban-dense", "value-market"]
+
+  - name: mart_dim_departments
+    description: >
+      Materialised passthrough of dim_departments. Mart-layer contract
+      for department metadata.
+    columns:
+      - name: department_id
+        data_tests:
+          - not_null
+          - unique
+      - name: department_name
+        data_tests:
+          - not_null
+      - name: is_perishable
+        data_tests:
+          - not_null
